@@ -151,6 +151,8 @@
 | IT-AUTH-001 | 구글 callback 처리 | 사용자 upsert + JWT 쿠키 발급 |
 | IT-AUTH-002 | 구글 callback 처리 | 사용자 upsert + JWT 쿠키 발급 |
 | IT-AUTH-003 | guest 세션 생성 | users row 생성 + guest 세션 발급 |
+| IT-AUTH-004 | 일반 회원가입 | local user 생성 + 세션 발급 |
+| IT-AUTH-005 | 일반 로그인 | 비밀번호 검증 + 세션 발급 |
 
 ### 7.2 방/멤버
 
@@ -196,7 +198,7 @@
 
 ### E2E-001 기본 3인 합의 일정 생성
 
-1. 방장 구글 OAuth 로그인
+1. 방장 구글 OAuth 로그인 또는 일반 로그인
 2. 방 생성
 3. 링크 공유
 4. 게스트 2명 링크 접속

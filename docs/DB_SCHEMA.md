@@ -65,7 +65,8 @@ CREATE TABLE users (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   nickname VARCHAR(50) NOT NULL,
   email VARCHAR(255) NULL,
-  auth_provider ENUM('google', 'guest') NOT NULL,
+  auth_provider ENUM('google', 'local', 'guest') NOT NULL,
+  password_hash VARCHAR(255) NULL,
   provider_user_id VARCHAR(100) NULL,
   profile_image_url TEXT NULL,
   admin_yn CHAR(1) NOT NULL DEFAULT 'N',
@@ -74,6 +75,7 @@ CREATE TABLE users (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_users_provider (auth_provider, provider_user_id),
+  UNIQUE KEY uq_users_email (email),
   KEY idx_users_email (email),
   KEY idx_users_del_yn (del_yn)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -82,7 +84,8 @@ CREATE TABLE users (
 제약:
 - `auth_provider='guest'`인 경우 `provider_user_id`는 NULL 허용
 - `auth_provider='google'`인 경우 `provider_user_id`는 필수
-- 이메일은 공급자 미제공 가능성을 고려해 unique 제약 대신 일반 index만 사용
+- `auth_provider='local'`인 경우 `provider_user_id=email`, `password_hash`는 필수
+- 이메일은 local 로그인 식별을 위해 unique 제약을 사용하며, OAuth 사용자는 공급자 미제공 시 NULL 허용
 - `admin_yn` 기본값은 `N`
 - 소프트 삭제 시 `del_yn='Y'`
 
@@ -439,7 +442,7 @@ CREATE TABLE satisfaction_scores (
 
 | 패턴 | 주요 인덱스 |
 |---|---|
-| OAuth 사용자 조회 | `uq_users_provider(auth_provider, provider_user_id)` |
+| OAuth/로컬 사용자 조회 | `uq_users_provider(auth_provider, provider_user_id)` / `uq_users_email(email)` |
 | 활성 사용자 조회 | `idx_users_del_yn(del_yn)` |
 | 공유 코드 진입 | `uq_trip_rooms_share_code(share_code)` |
 | 방 멤버 조회 | `uq_room_members_room_user(room_id, user_id)` |

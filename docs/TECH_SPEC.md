@@ -243,7 +243,7 @@ src/
 ### 5.4 인증 전략
 
 #### 방장
-- 회원가입/로그인은 **Kakao OAuth 또는 Google OAuth만 지원**
+- 회원가입/로그인은 **이메일/비밀번호 또는 Google OAuth**를 지원
 - 최초 OAuth 로그인 시 사용자 레코드를 자동 생성한다
 - 재로그인 시 `provider + provider_user_id` 기준으로 기존 계정을 식별한다
 - OAuth 성공 후 서비스용 JWT를 발급한다
@@ -279,7 +279,7 @@ src/
 | `id` | bigint PK | 사용자 식별자 |
 | `nickname` | varchar(50) | 표시명 |
 | `email` | varchar(255) nullable | OAuth 제공 이메일 |
-| `auth_provider` | enum | `google`, `guest` |
+| `auth_provider` | enum | `google`, `local`, `guest` |
 | `provider_user_id` | varchar(100) nullable | OAuth 공급자 사용자 ID |
 | `profile_image_url` | text nullable | OAuth 프로필 이미지 |
 | `admin_yn` | char(1) | 관리자 여부 (`Y`/`N`) |
@@ -716,6 +716,8 @@ TourAPI 수집
 
 | Method | Endpoint | 인증 | 설명 |
 |---|---|---|---|
+| POST | `/api/auth/register` | 없음 | 일반 회원가입 |
+| POST | `/api/auth/login` | 없음 | 일반 로그인 |
 | GET | `/api/auth/google` | 없음 | 구글 OAuth 시작 |
 | GET | `/api/auth/google/callback` | 없음 | 구글 OAuth 콜백 처리 |
 | POST | `/api/auth/logout` | 로그인 필요 | 로그아웃 (쿠키 만료) |
@@ -933,7 +935,7 @@ tmti_server/
 
 ### 15.3 E2E 시나리오
 
-1. 방장 구글 OAuth 로그인
+1. 방장 구글 OAuth 로그인 또는 일반 로그인
 2. 방 생성 후 링크 복사
 3. 게스트 2~3명 링크 참여 및 검사 완료
 4. 갈등 지도 확인
@@ -984,7 +986,7 @@ tmti_server/
 
 본 기술 명세서는 PRD를 구현 가능한 수준으로 구체화하기 위해 아래 항목을 추가로 확정했다.
 
-1. 방장 인증 방식은 **구글 OAuth 전용**으로 한다.
+1. 방장 인증 방식은 **일반 회원가입/로그인 또는 구글 OAuth**를 사용한다.
 2. TPTI 별명 생성과 갈등 요약은 **규칙/템플릿 기반**으로 시작한다.
 3. LLM은 **일정 구조 JSON 생성 전용**으로 제한한다.
 4. 장소 메타 태깅은 **규칙 기반 우선 + LLM 보정** 구조를 사용한다.

@@ -1,5 +1,6 @@
 export enum AuthProvider {
   GOOGLE = 'google',
+  LOCAL = 'local',
   GUEST = 'guest',
 }
 

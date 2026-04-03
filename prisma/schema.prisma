@@ -14,6 +14,7 @@ enum YnFlag {
 
 enum AuthProvider {
   google
+  local
   guest
 }
 
@@ -43,6 +44,7 @@ model User {
   id               BigInt               @id @default(autoincrement()) @db.UnsignedBigInt
   nickname         String               @db.VarChar(50)
   email            String?              @db.VarChar(255)
+  passwordHash     String?              @map("password_hash") @db.VarChar(255)
   authProvider     AuthProvider         @map("auth_provider")
   providerUserId   String?              @map("provider_user_id") @db.VarChar(100)
   profileImageUrl  String?              @map("profile_image_url") @db.Text
@@ -58,6 +60,7 @@ model User {
   targetSlots      ScheduleSlot[]       @relation("SlotTargetUser")
 
   @@unique([authProvider, providerUserId], map: "uq_users_provider")
+  @@unique([email], map: "uq_users_email")
   @@index([email], map: "idx_users_email")
   @@map("users")
 }

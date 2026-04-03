@@ -1,6 +1,8 @@
 import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, Query, Res } from '@nestjs/common';
 import { AuthProvider } from '../common/enums/domain.enums';
 import { CreateGuestSessionDto } from './dto/create-guest-session.dto';
+import { LoginDto } from './dto/login.dto';
+import { RegisterDto } from './dto/register.dto';
 import { AuthService } from './auth.service';
 import {
   buildCookieHeader,
@@ -12,6 +14,22 @@ import {
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  @Post('register')
+  @HttpCode(HttpStatus.CREATED)
+  async register(@Body() dto: RegisterDto, @Res({ passthrough: true }) res: any) {
+    const result = await this.authService.register(dto);
+    res.setHeader('Set-Cookie', buildCookieHeader(getSessionCookieName(), result.sessionToken, 60 * 60 * 24 * 7));
+    return result.response;
+  }
+
+  @Post('login')
+  @HttpCode(HttpStatus.OK)
+  async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: any) {
+    const result = await this.authService.login(dto);
+    res.setHeader('Set-Cookie', buildCookieHeader(getSessionCookieName(), result.sessionToken, 60 * 60 * 24 * 7));
+    return result.response;
+  }
 
   @Get('google')
   getGoogleOAuthRedirect(@Query('redirectPath') redirectPath: string | undefined, @Res() res: any) {

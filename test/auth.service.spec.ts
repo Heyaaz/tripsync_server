@@ -24,6 +24,53 @@ describe('AuthService', () => {
     process.env = originalEnv;
   });
 
+  it('registers local user with hashed password', async () => {
+    prisma.user.findFirst.mockResolvedValue(null);
+    prisma.user.create.mockImplementation(async ({ data }: any) => ({
+      id: BigInt(11),
+      nickname: data.nickname,
+      authProvider: data.authProvider,
+      isGuest: false,
+    }));
+
+    const result = await service.register({
+      nickname: '민지',
+      email: 'MinJi@example.com',
+      password: 'abc12345',
+    });
+
+    expect(prisma.user.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          email: 'minji@example.com',
+          authProvider: AuthProvider.LOCAL,
+          providerUserId: 'minji@example.com',
+          passwordHash: expect.stringContaining(':'),
+        }),
+      }),
+    );
+    expect(result.response.data?.user.authProvider).toBe(AuthProvider.LOCAL);
+  });
+
+  it('logs in local user with valid password', async () => {
+    const passwordHash = await (await import('../src/auth/password.util')).hashPassword('abc12345');
+    prisma.user.findFirst.mockResolvedValue({
+      id: BigInt(12),
+      nickname: '민지',
+      authProvider: AuthProvider.LOCAL,
+      isGuest: false,
+      passwordHash,
+    });
+
+    const result = await service.login({
+      email: 'minji@example.com',
+      password: 'abc12345',
+    });
+
+    expect(result.response.data?.user.authProvider).toBe(AuthProvider.LOCAL);
+    expect(result.sessionToken).toBeTruthy();
+  });
+
   it('builds google oauth redirect url with scope', () => {
     process.env.GOOGLE_CLIENT_ID = 'google-client';
     process.env.GOOGLE_CALLBACK_URL = 'http://localhost:3000/api/auth/google/callback';

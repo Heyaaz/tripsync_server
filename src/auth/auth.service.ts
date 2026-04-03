@@ -7,6 +7,9 @@ import { ok } from '../common/dto/api-response.dto';
 import { DomainException } from '../common/errors/domain.exception';
 import { ACTIVE_DEL_YN, withActiveFilter } from '../common/soft-delete/soft-delete.util';
 import { CreateGuestSessionDto } from './dto/create-guest-session.dto';
+import { LoginDto } from './dto/login.dto';
+import { RegisterDto } from './dto/register.dto';
+import { hashPassword, verifyPassword } from './password.util';
 import {
   extractCookie,
   extractSessionToken,
@@ -46,6 +49,32 @@ export class AuthService {
       return undefined;
     }
     return value;
+  }
+
+  private normalizeEmail(email: string) {
+    return email.trim().toLowerCase();
+  }
+
+  private buildSessionPayload(user: Pick<User, 'id' | 'nickname' | 'authProvider' | 'isGuest'>): SessionPayload {
+    return {
+      sub: Number(user.id),
+      provider: user.authProvider as AuthProvider,
+      isGuest: user.isGuest,
+      nickname: user.nickname,
+      exp: Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SECONDS,
+    };
+  }
+
+  private buildAuthSuccessResponse(user: Pick<User, 'id' | 'nickname' | 'authProvider' | 'isGuest'>) {
+    return ok({
+      user: {
+        id: Number(user.id),
+        nickname: user.nickname,
+        isGuest: user.isGuest,
+        authProvider: user.authProvider,
+      },
+      expiresIn: SESSION_EXPIRY_SECONDS,
+    });
   }
 
   private getCallbackUrl() {
@@ -183,7 +212,7 @@ export class AuthService {
     return {
       providerUserId: String(payload.sub),
       nickname: payload.name ?? (typeof payload.email === 'string' ? payload.email.split('@')[0] : 'google-user'),
-      email: payload.email ?? null,
+      email: payload.email ? this.normalizeEmail(payload.email) : null,
       profileImageUrl: payload.picture ?? null,
     } satisfies OAuthProfile;
   }
@@ -214,16 +243,6 @@ export class AuthService {
         delYn: ACTIVE_DEL_YN,
       },
     });
-  }
-
-  private buildSessionPayload(user: Pick<User, 'id' | 'nickname' | 'authProvider' | 'isGuest'>): SessionPayload {
-    return {
-      sub: Number(user.id),
-      provider: user.authProvider as AuthProvider,
-      isGuest: user.isGuest,
-      nickname: user.nickname,
-      exp: Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SECONDS,
-    };
   }
 
   async handleOAuthCallback(
@@ -272,6 +291,60 @@ export class AuthService {
     };
   }
 
+  async register(dto: RegisterDto) {
+    const email = this.normalizeEmail(dto.email);
+    const existingUser = await this.prisma.user.findFirst({
+      where: this.activeWhere({ email }),
+    });
+
+    if (existingUser) {
+      throw new DomainException(HttpStatus.CONFLICT, 'INVALID_REQUEST', '이미 사용 중인 이메일입니다.');
+    }
+
+    const passwordHash = await hashPassword(dto.password);
+    const user = await this.prisma.user.create({
+      data: {
+        nickname: dto.nickname,
+        email,
+        passwordHash,
+        authProvider: AuthProvider.LOCAL,
+        providerUserId: email,
+        profileImageUrl: null,
+        adminYn: YnFlag.NO,
+        isGuest: false,
+        delYn: ACTIVE_DEL_YN,
+      },
+    });
+
+    const sessionToken = issueSessionToken(this.buildSessionPayload(user));
+    return {
+      sessionToken,
+      response: this.buildAuthSuccessResponse(user),
+    };
+  }
+
+  async login(dto: LoginDto) {
+    const email = this.normalizeEmail(dto.email);
+    const user = await this.prisma.user.findFirst({
+      where: this.activeWhere({ email, authProvider: AuthProvider.LOCAL }),
+    });
+
+    if (!user || !user.passwordHash) {
+      throw new DomainException(HttpStatus.UNAUTHORIZED, 'UNAUTHORIZED', '이메일 또는 비밀번호가 올바르지 않습니다.');
+    }
+
+    const valid = await verifyPassword(dto.password, user.passwordHash);
+    if (!valid) {
+      throw new DomainException(HttpStatus.UNAUTHORIZED, 'UNAUTHORIZED', '이메일 또는 비밀번호가 올바르지 않습니다.');
+    }
+
+    const sessionToken = issueSessionToken(this.buildSessionPayload(user));
+    return {
+      sessionToken,
+      response: this.buildAuthSuccessResponse(user),
+    };
+  }
+
   async createGuestSession(dto: CreateGuestSessionDto) {
     const user = await this.prisma.user.create({
       data: {
@@ -294,6 +367,7 @@ export class AuthService {
           id: Number(user.id),
           nickname: user.nickname,
           isGuest: true,
+          authProvider: user.authProvider,
         },
         expiresIn: SESSION_EXPIRY_SECONDS,
       }),
@@ -323,6 +397,10 @@ export class AuthService {
     }
 
     return user;
+  }
+
+  private activeWhere<T extends Record<string, unknown>>(where?: T) {
+    return withActiveFilter(where);
   }
 
   assertHostUser(user: Pick<User, 'isGuest'>) {

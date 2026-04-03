@@ -111,7 +111,55 @@
 
 ## 3. 인증 API
 
-### 3.1 GET `/api/auth/google`
+### 3.1 POST `/api/auth/register`
+
+일반 회원가입을 처리한다.
+
+- 인증: 없음
+- 응답: `201`
+- 동작:
+  1. 이메일 중복 검사
+  2. 비밀번호 해시 생성
+  3. `users` 생성 (`auth_provider=local`)
+  4. `ts_access_token` 쿠키 설정
+
+#### Request Body
+
+```json
+{
+  "nickname": "민지",
+  "email": "minji@example.com",
+  "password": "abc12345"
+}
+```
+
+#### Validation
+
+- `nickname`: 2~12자
+- `email`: 이메일 형식
+- `password`: 8~64자, 영문+숫자 포함
+
+### 3.2 POST `/api/auth/login`
+
+일반 로그인을 처리한다.
+
+- 인증: 없음
+- 응답: `200`
+- 동작:
+  1. `auth_provider=local` 사용자 조회
+  2. 비밀번호 검증
+  3. `ts_access_token` 쿠키 설정
+
+#### Request Body
+
+```json
+{
+  "email": "minji@example.com",
+  "password": "abc12345"
+}
+```
+
+### 3.3 GET `/api/auth/google`
 
 구글 OAuth 인증을 시작한다.
 
@@ -128,7 +176,7 @@
 |---|---|---|---|
 | `redirectPath` | string | N | 로그인 완료 후 프론트에서 이동할 경로. 기본값 `/rooms/new` |
 
-### 3.2 GET `/api/auth/google/callback`
+### 3.4 GET `/api/auth/google/callback`
 
 구글 OAuth 콜백을 처리한다.
 
@@ -157,7 +205,7 @@
 Set-Cookie: ts_access_token=...; HttpOnly; Secure
 ```
 
-### 3.3 POST `/api/auth/logout`
+### 3.5 POST `/api/auth/logout`
 
 로그인 상태를 해제한다.
 
@@ -178,7 +226,7 @@ Set-Cookie: ts_access_token=...; HttpOnly; Secure
 }
 ```
 
-### 3.4 POST `/api/auth/guest`
+### 3.6 POST `/api/auth/guest`
 
 게스트 세션을 생성한다.
 
