@@ -1,9 +1,12 @@
-import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, Query, Res } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { User } from '@prisma/client';
 import { AuthProvider } from '../common/enums/domain.enums';
 import { CreateGuestSessionDto } from './dto/create-guest-session.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { AuthService } from './auth.service';
+import { CurrentUser } from './current-user.decorator';
+import { SessionAuthGuard } from './session-auth.guard';
 import {
   buildCookieHeader,
   buildExpiredCookieHeader,
@@ -29,6 +32,12 @@ export class AuthController {
     const result = await this.authService.login(dto);
     res.setHeader('Set-Cookie', buildCookieHeader(getSessionCookieName(), result.sessionToken, 60 * 60 * 24 * 7));
     return result.response;
+  }
+
+  @Get('me')
+  @UseGuards(SessionAuthGuard)
+  me(@CurrentUser() user: User) {
+    return this.authService.getMe(user);
   }
 
   @Get('google')

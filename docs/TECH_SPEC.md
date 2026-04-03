@@ -718,6 +718,7 @@ TourAPI 수집
 |---|---|---|---|
 | POST | `/api/auth/register` | 없음 | 일반 회원가입 |
 | POST | `/api/auth/login` | 없음 | 일반 로그인 |
+| GET | `/api/auth/me` | 로그인 필요 | 현재 세션 사용자 조회 |
 | GET | `/api/auth/google` | 없음 | 구글 OAuth 시작 |
 | GET | `/api/auth/google/callback` | 없음 | 구글 OAuth 콜백 처리 |
 | POST | `/api/auth/logout` | 로그인 필요 | 로그아웃 (쿠키 만료) |

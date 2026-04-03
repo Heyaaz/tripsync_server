@@ -71,6 +71,27 @@ describe('AuthService', () => {
     expect(result.sessionToken).toBeTruthy();
   });
 
+
+  it('returns current user payload for auth me', () => {
+    const result = service.getMe({
+      id: BigInt(21),
+      nickname: '민지',
+      email: 'minji@example.com',
+      authProvider: AuthProvider.LOCAL,
+      isGuest: false,
+    } as any);
+
+    expect(result.data).toEqual({
+      user: {
+        id: 21,
+        nickname: '민지',
+        email: 'minji@example.com',
+        isGuest: false,
+        authProvider: AuthProvider.LOCAL,
+      },
+    });
+  });
+
   it('builds google oauth redirect url with scope', () => {
     process.env.GOOGLE_CLIENT_ID = 'google-client';
     process.env.GOOGLE_CALLBACK_URL = 'http://localhost:3000/api/auth/google/callback';

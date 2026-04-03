@@ -345,6 +345,18 @@ export class AuthService {
     };
   }
 
+  getMe(user: User) {
+    return ok({
+      user: {
+        id: Number(user.id),
+        nickname: user.nickname,
+        email: user.email ?? null,
+        isGuest: user.isGuest,
+        authProvider: user.authProvider,
+      },
+    });
+  }
+
   async createGuestSession(dto: CreateGuestSessionDto) {
     const user = await this.prisma.user.create({
       data: {

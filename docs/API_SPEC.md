@@ -159,7 +159,35 @@
 }
 ```
 
-### 3.3 GET `/api/auth/google`
+### 3.3 GET `/api/auth/me`
+
+현재 로그인한 사용자의 세션 정보를 조회한다.
+
+- 인증: 로그인 필요
+- 응답: `200`
+
+#### Response Example
+
+```json
+{
+  "success": true,
+  "data": {
+    "user": {
+      "id": 21,
+      "nickname": "민지",
+      "email": "minji@example.com",
+      "isGuest": false,
+      "authProvider": "local"
+    }
+  },
+  "error": null,
+  "meta": {
+    "requestId": "req_auth_me_001"
+  }
+}
+```
+
+### 3.4 GET `/api/auth/google`
 
 구글 OAuth 인증을 시작한다.
 
@@ -176,7 +204,7 @@
 |---|---|---|---|
 | `redirectPath` | string | N | 로그인 완료 후 프론트에서 이동할 경로. 기본값 `/rooms/new` |
 
-### 3.4 GET `/api/auth/google/callback`
+### 3.5 GET `/api/auth/google/callback`
 
 구글 OAuth 콜백을 처리한다.
 
@@ -205,7 +233,7 @@
 Set-Cookie: ts_access_token=...; HttpOnly; Secure
 ```
 
-### 3.5 POST `/api/auth/logout`
+### 3.6 POST `/api/auth/logout`
 
 로그인 상태를 해제한다.
 
@@ -226,7 +254,7 @@ Set-Cookie: ts_access_token=...; HttpOnly; Secure
 }
 ```
 
-### 3.6 POST `/api/auth/guest`
+### 3.7 POST `/api/auth/guest`
 
 게스트 세션을 생성한다.
 
