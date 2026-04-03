@@ -416,7 +416,7 @@ describe('Travel flow integration', () => {
 
   it('runs room creation, TPTI, conflict map, schedule generation, and confirmation in one flow', async () => {
     const { prisma, state } = createPrismaStub(users);
-    const consensusService = new ConsensusService();
+    const consensusService = new ConsensusService({ refineScheduleOption: jest.fn().mockResolvedValue(null) } as any);
     const roomService = new RoomService(authService as any, prisma as any);
     const tptiService = new TptiService(authService as any, prisma as any);
     const conflictService = new ConflictService(authService as any, consensusService, prisma as any);

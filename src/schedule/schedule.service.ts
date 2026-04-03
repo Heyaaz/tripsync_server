@@ -127,7 +127,7 @@ export class ScheduleService extends BaseSoftDeleteService {
             } as Prisma.InputJsonValue,
             summary: option.summary,
             groupSatisfaction: option.groupSatisfaction,
-            llmProvider: 'deterministic-consensus',
+            llmProvider: option.llmProvider,
             delYn: ACTIVE_DEL_YN,
           },
         });
@@ -189,7 +189,7 @@ export class ScheduleService extends BaseSoftDeleteService {
       orderBy: { id: 'asc' },
     });
 
-    const options = this.consensusService.buildScheduleOptions({
+    const options = await this.consensusService.buildScheduleOptions({
       roomId,
       destination: dto.destination,
       tripDate: dto.tripDate,

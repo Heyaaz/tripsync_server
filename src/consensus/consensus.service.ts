@@ -8,6 +8,7 @@ import {
   SlotType,
 } from '../common/enums/domain.enums';
 import { DomainException } from '../common/errors/domain.exception';
+import { LlmService } from '../llm/llm.service';
 
 export interface AxisScores {
   mobility: number;
@@ -76,6 +77,7 @@ export interface ScheduleOptionDraft {
   groupSatisfaction: number;
   slots: ScheduleSlotDraft[];
   satisfactionByUser: SatisfactionDraft[];
+  llmProvider: string;
 }
 
 interface SlotShape {
@@ -125,6 +127,8 @@ const SLOT_TEMPLATES: Record<5 | 6 | 7, number[]> = {
 
 @Injectable()
 export class ConsensusService {
+  constructor(private readonly llmService: LlmService = new LlmService()) {}
+
   analyzeGroup(members: MemberSnapshot[]) {
     if (members.length < 2) {
       throw new DomainException(HttpStatus.UNPROCESSABLE_ENTITY, 'ROOM_NOT_READY', '갈등 분석을 위해 최소 2명의 멤버가 필요합니다.');
@@ -160,7 +164,7 @@ export class ConsensusService {
     };
   }
 
-  buildScheduleOptions(context: OptionContext): ScheduleOptionDraft[] {
+  async buildScheduleOptions(context: OptionContext): Promise<ScheduleOptionDraft[]> {
     if (context.destination !== '충남') {
       throw new DomainException(HttpStatus.UNPROCESSABLE_ENTITY, 'INVALID_REQUEST', 'MVP에서는 충남 일정만 생성할 수 있습니다.');
     }
@@ -179,7 +183,7 @@ export class ConsensusService {
     const baseShapes = this.buildIndividualSlotShapes(slotTemplate, analysis, context.members);
     const averageVector = this.getAverageScores(context.members);
 
-    const individual = this.materializeOption(
+    const individual = await this.materializeOption(
       ScheduleOptionType.INDIVIDUAL,
       '개성형',
       '각자의 취향이 살아있는 교대 배분 일정',
@@ -189,9 +193,11 @@ export class ConsensusService {
       false,
       context.members,
       context.tripDate,
+      analysis,
+      context,
     );
 
-    const balanced = this.materializeOption(
+    const balanced = await this.materializeOption(
       ScheduleOptionType.BALANCED,
       '균형형',
       '모두가 조금씩 만족하는 안전한 선택',
@@ -209,9 +215,11 @@ export class ConsensusService {
       false,
       context.members,
       context.tripDate,
+      analysis,
+      context,
     );
 
-    const discovery = this.materializeOption(
+    const discovery = await this.materializeOption(
       ScheduleOptionType.DISCOVERY,
       '지역 발굴형',
       '충남 인구감소지역 숨은 명소 중심 탐험 일정',
@@ -221,6 +229,8 @@ export class ConsensusService {
       true,
       context.members,
       context.tripDate,
+      analysis,
+      context,
     );
 
     return [balanced, individual, discovery];
@@ -416,7 +426,7 @@ export class ConsensusService {
     };
   }
 
-  private materializeOption(
+  private async materializeOption(
     optionType: ScheduleOptionType,
     label: string,
     summary: string,
@@ -426,12 +436,25 @@ export class ConsensusService {
     preferHiddenGem: boolean,
     members: MemberSnapshot[],
     tripDate: string,
-  ): ScheduleOptionDraft {
+    analysis: ReturnType<ConsensusService['analyzeGroup']>,
+    context: OptionContext,
+  ): Promise<ScheduleOptionDraft> {
     const chosenPlaces: PlaceCandidate[] = [];
     const forcedHiddenGemIndex = preferHiddenGem ? this.pickForcedHiddenGemSlot(targets) : -1;
+    const shortlistedPerSlot: Array<{
+      orderIndex: number;
+      startTime: string;
+      endTime: string;
+      slotType: SlotType;
+      targetUserId: number | null;
+      reasonAxis: ReasonAxis | ScoreAxis;
+      candidatePlaces: Array<{ id: number; name: string; category: string; address: string }>;
+      deterministicPlaceId: number;
+      deterministicReason: string;
+    }> = [];
     const slots = targets.map((target, index) => {
       const profile = this.buildSlotSelectionProfile(target.startTime, target.endTime, index + 1, targets.length);
-      const place = this.selectBestPlace({
+      const rankedPlaces = this.rankPlaces({
         targetVector: target.scores,
         places,
         usedPlaceIds: new Set(chosenPlaces.map((candidate) => candidate.id)),
@@ -441,8 +464,29 @@ export class ConsensusService {
         tripDate,
         profile,
       });
+      const place = rankedPlaces[0];
+
+      if (!place) {
+        throw new DomainException(HttpStatus.UNPROCESSABLE_ENTITY, 'PLACE_CANDIDATE_EMPTY', '일정 생성 후보 장소가 부족합니다.');
+      }
 
       chosenPlaces.push(place);
+      shortlistedPerSlot.push({
+        orderIndex: index + 1,
+        startTime: target.startTime.toISOString().slice(11, 16),
+        endTime: target.endTime.toISOString().slice(11, 16),
+        slotType: target.slotType,
+        targetUserId: target.targetUserId,
+        reasonAxis: target.reasonAxis,
+        candidatePlaces: rankedPlaces.slice(0, 5).map((candidate) => ({
+          id: candidate.id,
+          name: candidate.name,
+          category: candidate.category,
+          address: candidate.address,
+        })),
+        deterministicPlaceId: place.id,
+        deterministicReason: target.reasonText,
+      });
       return {
         orderIndex: index + 1,
         slotType: target.slotType,
@@ -458,7 +502,56 @@ export class ConsensusService {
       } satisfies ScheduleSlotDraft;
     });
 
-    const satisfactionByUser = this.buildSatisfaction(optionType, slots, chosenPlaces, members);
+    const llmRefined = await this.llmService.refineScheduleOption({
+      optionType,
+      label,
+      summary,
+      room: {
+        id: context.roomId,
+        destination: context.destination,
+        tripDate: context.tripDate,
+      },
+      commonAxes: analysis.commonAxes,
+      priorityAxes: analysis.priorityAxes,
+      members: members.map((member) => ({
+        userId: member.userId,
+        nickname: member.nickname,
+      })),
+      slotPlan: shortlistedPerSlot,
+    });
+
+    const finalSummary = llmRefined?.summary || summary;
+    const finalPlacesByOrder = new Map<number, PlaceCandidate>();
+    if (llmRefined) {
+      for (const slot of llmRefined.slots) {
+        const place = places.find((candidate) => candidate.id === slot.placeId);
+        if (place) {
+          finalPlacesByOrder.set(slot.orderIndex, place);
+        }
+      }
+    }
+
+    const finalSlots = slots.map((slot) => {
+      const refined = llmRefined?.slots.find((entry) => entry.orderIndex === slot.orderIndex);
+      const refinedPlace = finalPlacesByOrder.get(slot.orderIndex);
+      if (!refined || !refinedPlace) {
+        return slot;
+      }
+      return {
+        ...slot,
+        placeId: refinedPlace.id,
+        placeName: refinedPlace.name,
+        placeAddress: refinedPlace.address,
+        reasonText: refined.reason,
+        isHiddenGem: this.isHiddenGem(refinedPlace),
+      };
+    });
+
+    const finalPlaces = finalSlots.map((slot, index) => {
+      return finalPlacesByOrder.get(slot.orderIndex) ?? chosenPlaces[index];
+    });
+
+    const satisfactionByUser = this.buildSatisfaction(optionType, finalSlots, finalPlaces, members);
     const groupSatisfaction = Math.max(
       threshold,
       Math.min(...satisfactionByUser.map((entry) => entry.score)),
@@ -467,10 +560,11 @@ export class ConsensusService {
     return {
       optionType,
       label,
-      summary,
+      summary: finalSummary,
       groupSatisfaction,
-      slots,
+      slots: finalSlots,
       satisfactionByUser,
+      llmProvider: llmRefined?.provider ?? 'deterministic-consensus',
     };
   }
 
@@ -517,7 +611,7 @@ export class ConsensusService {
     return personalIndex >= 0 ? personalIndex : Math.floor(targets.length / 2);
   }
 
-  private selectBestPlace(input: {
+  private rankPlaces(input: {
     targetVector: AxisScores;
     places: PlaceCandidate[];
     usedPlaceIds: Set<number>;
@@ -556,17 +650,10 @@ export class ConsensusService {
       }
     }
 
-    const ranked = [...pool].sort((a, b) => {
+    return [...pool].sort((a, b) => {
       return this.placeRankingScore(b, input.targetVector, input.previousPlace, input.preferHiddenGem, input.usedPlaceIds, input.tripDate, input.profile) -
         this.placeRankingScore(a, input.targetVector, input.previousPlace, input.preferHiddenGem, input.usedPlaceIds, input.tripDate, input.profile);
     });
-
-    const candidate = ranked[0];
-    if (!candidate) {
-      throw new DomainException(HttpStatus.UNPROCESSABLE_ENTITY, 'PLACE_CANDIDATE_EMPTY', '일정 생성 후보 장소가 부족합니다.');
-    }
-
-    return candidate;
   }
 
   private placeRankingScore(

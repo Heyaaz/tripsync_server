@@ -2,7 +2,15 @@ import { ConsensusService, MemberSnapshot, PlaceCandidate } from '../src/consens
 import { ScheduleOptionType } from '../src/common/enums/domain.enums';
 
 describe('ConsensusService', () => {
-  const service = new ConsensusService();
+  const llmService = {
+    refineScheduleOption: jest.fn().mockResolvedValue(null),
+  };
+  const service = new ConsensusService(llmService as any);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    llmService.refineScheduleOption.mockResolvedValue(null);
+  });
 
   const members: MemberSnapshot[] = [
     {
@@ -105,8 +113,8 @@ describe('ConsensusService', () => {
     expect(analysis.priorityAxes[0]).toBe('mobility');
   });
 
-  it('builds balanced, individual, and discovery options with satisfaction and hidden gems', () => {
-    const options = service.buildScheduleOptions({
+  it('builds balanced, individual, and discovery options with satisfaction and hidden gems', async () => {
+    const options = await service.buildScheduleOptions({
       roomId: 1,
       destination: '충남',
       tripDate: '2026-05-02',
@@ -132,7 +140,7 @@ describe('ConsensusService', () => {
     expect(discovery?.slots.some((slot) => slot.isHiddenGem)).toBe(true);
   });
 
-  it('prioritizes restaurants for meal slots and avoids accommodations before the final slot', () => {
+  it('prioritizes restaurants for meal slots and avoids accommodations before the final slot', async () => {
     const curatedPlaces: PlaceCandidate[] = [
       {
         id: 201,
@@ -226,7 +234,7 @@ describe('ConsensusService', () => {
       },
     ];
 
-    const options = service.buildScheduleOptions({
+    const options = await service.buildScheduleOptions({
       roomId: 1,
       destination: '충남',
       tripDate: '2026-05-02',
@@ -249,7 +257,7 @@ describe('ConsensusService', () => {
     expect(['restaurant', 'shopping']).toContain(curatedPlaces.find((place) => place.id === finalSlot.placeId)?.category);
   });
 
-  it('prefers places that are open during the slot over better-scored closed places', () => {
+  it('prefers places that are open during the slot over better-scored closed places', async () => {
     const timedPlaces: PlaceCandidate[] = [
       {
         id: 401,
@@ -346,7 +354,7 @@ describe('ConsensusService', () => {
       },
     ];
 
-    const options = service.buildScheduleOptions({
+    const options = await service.buildScheduleOptions({
       roomId: 1,
       destination: '충남',
       tripDate: '2026-05-02',
@@ -361,7 +369,7 @@ describe('ConsensusService', () => {
     expect(balanced.slots[0]?.placeId).not.toBe(402);
   });
 
-  it('filters out date-mismatched festivals when generating schedules', () => {
+  it('filters out date-mismatched festivals when generating schedules', async () => {
     const datedPlaces: PlaceCandidate[] = [
       {
         id: 301,
@@ -443,7 +451,7 @@ describe('ConsensusService', () => {
       },
     ];
 
-    const options = service.buildScheduleOptions({
+    const options = await service.buildScheduleOptions({
       roomId: 1,
       destination: '충남',
       tripDate: '2026-05-02',
@@ -456,5 +464,35 @@ describe('ConsensusService', () => {
     for (const option of options) {
       expect(option.slots.some((slot) => slot.placeId === 302)).toBe(false);
     }
+  });
+
+  it('applies validated llm refinements only within candidate place ids', async () => {
+    llmService.refineScheduleOption.mockResolvedValue({
+      summary: 'LLM이 자연스러운 이동 순서로 다듬은 일정입니다.',
+      provider: 'openai:gpt-5',
+      slots: [
+        { orderIndex: 1, placeId: 104, reason: '오전 시작은 접근성이 좋은 역사 코스' },
+        { orderIndex: 2, placeId: 103, reason: '점심 시간대 식사 슬롯 반영' },
+        { orderIndex: 3, placeId: 102, reason: '개인 취향을 반영한 포토 스팟' },
+        { orderIndex: 4, placeId: 106, reason: '지역 발굴형 후보 활용' },
+        { orderIndex: 5, placeId: 101, reason: '마무리 전 공통 선호 반영' },
+      ],
+    });
+
+    const options = await service.buildScheduleOptions({
+      roomId: 1,
+      destination: '충남',
+      tripDate: '2026-05-02',
+      startTime: '09:00',
+      endTime: '21:00',
+      members,
+      places,
+    });
+
+    const balanced = options.find((option) => option.optionType === ScheduleOptionType.BALANCED)!;
+    expect(balanced.summary).toContain('LLM');
+    expect(balanced.llmProvider).toBe('openai:gpt-5');
+    expect(balanced.slots[0]?.placeId).toBe(104);
+    expect(balanced.slots[1]?.reasonText).toContain('점심 시간대');
   });
 });
