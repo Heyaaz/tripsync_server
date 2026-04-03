@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { ApiExceptionFilter } from './common/errors/api-exception.filter';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -14,6 +15,7 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
+  app.useGlobalFilters(new ApiExceptionFilter());
 
   const port = process.env.PORT ? Number(process.env.PORT) : 3000;
   await app.listen(port);

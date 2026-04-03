@@ -38,3 +38,14 @@ export enum RegenerationReason {
   NEW_MEMBER_JOINED = 'new_member_joined',
   MANUAL_RETRY = 'manual_retry',
 }
+
+export enum ScheduleOptionType {
+  BALANCED = 'balanced',
+  INDIVIDUAL = 'individual',
+  DISCOVERY = 'discovery',
+}
+
+export const SCORE_AXES = ['mobility', 'photo', 'budget', 'theme'] as const;
+export type ScoreAxis = (typeof SCORE_AXES)[number];
+
+export type ConflictSeverity = 'common' | 'minor' | 'moderate' | 'critical';

@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 export interface ApiErrorBody {
   code: string;
   message: string;
@@ -15,7 +17,11 @@ export interface ApiResponse<T> {
   meta: ApiMeta;
 }
 
-export function ok<T>(data: T, requestId = 'local-dev'): ApiResponse<T> {
+export function buildRequestId() {
+  return `req_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+}
+
+export function ok<T>(data: T, requestId = buildRequestId()): ApiResponse<T> {
   return {
     success: true,
     data,
