@@ -24,7 +24,7 @@
 
 ### 2.2 인증 방식
 
-- 방장 인증은 **Kakao OAuth / Google OAuth 전용**이다.
+- 방장 인증은 **Google OAuth 전용**이다.
 - 동행자는 `POST /api/auth/guest`로 게스트 세션을 발급받는다.
 - 서비스 세션은 JWT 기반이며, 브라우저 환경에서는 **HttpOnly Secure Cookie**를 기본 사용 방식으로 정의한다.
 - 프론트엔드는 `credentials: include`로 API를 호출한다.
@@ -111,16 +111,16 @@
 
 ## 3. 인증 API
 
-### 3.1 GET `/api/auth/kakao`
+### 3.1 GET `/api/auth/google`
 
-카카오 OAuth 인증을 시작한다.
+구글 OAuth 인증을 시작한다.
 
 - 인증: 없음
 - 응답: `302 Redirect`
 - 동작:
   1. 서버가 `state` 생성
   2. 세션/쿠키에 state 저장
-  3. 카카오 인증 페이지로 리다이렉트
+  3. 구글 인증 페이지로 리다이렉트
 
 #### Query Parameters
 
@@ -128,17 +128,17 @@
 |---|---|---|---|
 | `redirectPath` | string | N | 로그인 완료 후 프론트에서 이동할 경로. 기본값 `/rooms/new` |
 
-### 3.2 GET `/api/auth/kakao/callback`
+### 3.2 GET `/api/auth/google/callback`
 
-카카오 OAuth 콜백을 처리한다.
+구글 OAuth 콜백을 처리한다.
 
 - 인증: 없음
 - 응답: `302 Redirect`
 - 성공 시 동작:
   1. `code`, `state` 검증
-  2. 카카오 access token 교환
+  2. 구글 access token 교환
   3. 사용자 정보 조회
-  4. `users` upsert (`auth_provider=kakao`)
+  4. `users` upsert (`auth_provider=google`)
   5. `ts_access_token` 쿠키 설정
   6. 프론트 URL로 리다이렉트
 
@@ -157,23 +157,7 @@
 Set-Cookie: ts_access_token=...; HttpOnly; Secure
 ```
 
-### 3.3 GET `/api/auth/google`
-
-구글 OAuth 인증을 시작한다.
-
-- 인증: 없음
-- 응답: `302 Redirect`
-- 규칙: 카카오와 동일하며 공급자만 다름
-
-### 3.4 GET `/api/auth/google/callback`
-
-구글 OAuth 콜백을 처리한다.
-
-- 인증: 없음
-- 응답: `302 Redirect`
-- 규칙: 카카오와 동일하며 공급자만 다름
-
-### 3.5 POST `/api/auth/logout`
+### 3.3 POST `/api/auth/logout`
 
 로그인 상태를 해제한다.
 
@@ -194,7 +178,7 @@ Set-Cookie: ts_access_token=...; HttpOnly; Secure
 }
 ```
 
-### 3.6 POST `/api/auth/guest`
+### 3.4 POST `/api/auth/guest`
 
 게스트 세션을 생성한다.
 
@@ -848,7 +832,7 @@ TPTI 응답을 제출하고 결과를 생성한다.
   "id": 10,
   "nickname": "지훈",
   "isGuest": false,
-  "authProvider": "kakao",
+  "authProvider": "google",
   "adminYn": "N"
 }
 ```
@@ -918,6 +902,6 @@ TPTI 응답을 제출하고 결과를 생성한다.
 다음 항목은 실제 구현 시 추가 확정이 필요하다.
 
 1. 프론트와 API의 실제 도메인 분리 여부에 따른 쿠키 `SameSite` 정책
-2. 카카오/구글 OAuth scope 최소화 범위
+2. 구글 OAuth scope 최소화 범위
 3. 로그인 성공 후 프론트 리다이렉트 경로 세분화
 4. 일정 조회 시 이전 버전 목록 API 추가 여부

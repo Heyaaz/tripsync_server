@@ -35,29 +35,32 @@ describe('AuthService', () => {
     expect(result.redirectUrl).toContain(encodeURIComponent('http://localhost:3000/api/auth/google/callback'));
   });
 
-  it('falls back to local identity when provider credentials are not configured', async () => {
+  it('falls back to local google identity when provider credentials are not configured', async () => {
+    delete process.env.GOOGLE_CLIENT_ID;
+    delete process.env.GOOGLE_CLIENT_SECRET;
+    delete process.env.GOOGLE_CALLBACK_URL;
     prisma.user.upsert.mockResolvedValue({
       id: BigInt(1),
-      nickname: 'kakao-host',
-      authProvider: AuthProvider.KAKAO,
+      nickname: 'google-host',
+      authProvider: AuthProvider.GOOGLE,
       isGuest: false,
     });
 
     const result = await service.handleOAuthCallback(
-      AuthProvider.KAKAO,
-      { code: 'local-kakao-code', state: 'state|/rooms/new' },
+      AuthProvider.GOOGLE,
+      { code: 'local-google-code', state: 'state|/rooms/new' },
       'ts_oauth_state=state',
     );
 
     expect(prisma.user.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
-          providerUserId: 'local-kakao-code',
-          nickname: 'kakao-host',
+          providerUserId: 'local-google-code',
+          nickname: 'google-host',
         }),
       }),
     );
-    expect(result.user.nickname).toBe('kakao-host');
+    expect(result.user.nickname).toBe('google-host');
     expect(result.redirectUrl).toContain('/rooms/new?login=success');
   });
 

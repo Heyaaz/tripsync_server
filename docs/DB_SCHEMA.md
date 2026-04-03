@@ -65,7 +65,7 @@ CREATE TABLE users (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   nickname VARCHAR(50) NOT NULL,
   email VARCHAR(255) NULL,
-  auth_provider ENUM('kakao', 'google', 'guest') NOT NULL,
+  auth_provider ENUM('google', 'guest') NOT NULL,
   provider_user_id VARCHAR(100) NULL,
   profile_image_url TEXT NULL,
   admin_yn CHAR(1) NOT NULL DEFAULT 'N',
@@ -81,7 +81,7 @@ CREATE TABLE users (
 
 제약:
 - `auth_provider='guest'`인 경우 `provider_user_id`는 NULL 허용
-- `auth_provider in ('kakao','google')`인 경우 `provider_user_id`는 필수
+- `auth_provider='google'`인 경우 `provider_user_id`는 필수
 - 이메일은 공급자 미제공 가능성을 고려해 unique 제약 대신 일반 index만 사용
 - `admin_yn` 기본값은 `N`
 - 소프트 삭제 시 `del_yn='Y'`

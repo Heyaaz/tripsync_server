@@ -17,8 +17,7 @@ import {
 } from './session-token.util';
 
 const SESSION_EXPIRY_SECONDS = 60 * 60 * 24 * 7;
-
-type OAuthProvider = Exclude<AuthProvider, AuthProvider.GUEST>;
+type OAuthProvider = AuthProvider.GOOGLE;
 
 interface OAuthConfig {
   authorizeUrl: string;
@@ -49,47 +48,28 @@ export class AuthService {
     return value;
   }
 
-  private getCallbackUrl(provider: OAuthProvider) {
-    if (provider === AuthProvider.KAKAO) {
-      return this.readEnv('KAKAO_CALLBACK_URL') ?? `${process.env.API_BASE_URL ?? 'http://localhost:3000/api'}/auth/kakao/callback`;
-    }
-
+  private getCallbackUrl() {
     return this.readEnv('GOOGLE_CALLBACK_URL') ?? `${process.env.API_BASE_URL ?? 'http://localhost:3000/api'}/auth/google/callback`;
   }
 
-  private getOAuthConfig(provider: OAuthProvider): OAuthConfig {
-    if (provider === AuthProvider.KAKAO) {
-      return {
-        authorizeUrl: this.readEnv('KAKAO_AUTHORIZE_URL') ?? 'https://kauth.kakao.com/oauth/authorize',
-        tokenUrl: this.readEnv('KAKAO_TOKEN_URL') ?? 'https://kauth.kakao.com/oauth/token',
-        userInfoUrl: this.readEnv('KAKAO_USERINFO_URL') ?? 'https://kapi.kakao.com/v2/user/me',
-        clientId: this.readEnv('KAKAO_CLIENT_ID'),
-        clientSecret: this.readEnv('KAKAO_CLIENT_SECRET'),
-        callbackUrl: this.getCallbackUrl(AuthProvider.KAKAO),
-      };
-    }
-
+  private getOAuthConfig(): OAuthConfig {
     return {
       authorizeUrl: this.readEnv('GOOGLE_AUTHORIZE_URL') ?? 'https://accounts.google.com/o/oauth2/v2/auth',
       tokenUrl: this.readEnv('GOOGLE_TOKEN_URL') ?? 'https://oauth2.googleapis.com/token',
       userInfoUrl: this.readEnv('GOOGLE_USERINFO_URL') ?? 'https://openidconnect.googleapis.com/v1/userinfo',
       clientId: this.readEnv('GOOGLE_CLIENT_ID'),
       clientSecret: this.readEnv('GOOGLE_CLIENT_SECRET'),
-      callbackUrl: this.getCallbackUrl(AuthProvider.GOOGLE),
+      callbackUrl: this.getCallbackUrl(),
       scope: 'openid profile email',
     };
   }
 
-  private buildProviderAuthUrl(
-    provider: OAuthProvider,
-    state: string,
-    redirectPath: string,
-  ) {
-    const config = this.getOAuthConfig(provider);
+  private buildProviderAuthUrl(state: string, redirectPath: string) {
+    const config = this.getOAuthConfig();
     const combinedState = `${state}|${redirectPath}`;
 
     if (!config.clientId) {
-      return `${config.callbackUrl}?code=local-${provider}-code&state=${encodeURIComponent(combinedState)}&redirectPath=${encodeURIComponent(
+      return `${config.callbackUrl}?code=local-google-code&state=${encodeURIComponent(combinedState)}&redirectPath=${encodeURIComponent(
         redirectPath,
       )}`;
     }
@@ -99,22 +79,23 @@ export class AuthService {
       client_id: config.clientId,
       redirect_uri: config.callbackUrl,
       state: combinedState,
+      scope: config.scope ?? 'openid profile email',
+      access_type: 'offline',
+      prompt: 'consent',
+      include_granted_scopes: 'true',
     });
-
-    if (provider === AuthProvider.GOOGLE) {
-      params.set('scope', config.scope ?? 'openid profile email');
-      params.set('access_type', 'offline');
-      params.set('prompt', 'consent');
-      params.set('include_granted_scopes', 'true');
-    }
 
     return `${config.authorizeUrl}?${params.toString()}`;
   }
 
   getOAuthRedirect(provider: OAuthProvider, redirectPath?: string) {
+    if (provider !== AuthProvider.GOOGLE) {
+      throw new DomainException(HttpStatus.BAD_REQUEST, 'INVALID_REQUEST', '현재는 Google OAuth만 지원합니다.');
+    }
+
     const normalizedRedirectPath = redirectPath ?? '/rooms/new';
     const state = randomUUID();
-    const redirectUrl = this.buildProviderAuthUrl(provider, state, normalizedRedirectPath);
+    const redirectUrl = this.buildProviderAuthUrl(state, normalizedRedirectPath);
 
     return {
       state,
@@ -123,8 +104,8 @@ export class AuthService {
     };
   }
 
-  private async exchangeAuthorizationCode(provider: OAuthProvider, code: string) {
-    const config = this.getOAuthConfig(provider);
+  private async exchangeAuthorizationCode(code: string) {
+    const config = this.getOAuthConfig();
     if (!config.clientId) {
       return null;
     }
@@ -150,7 +131,7 @@ export class AuthService {
 
     if (!response.ok) {
       throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'OAuth 토큰 교환에 실패했습니다.', {
-        provider,
+        provider: AuthProvider.GOOGLE,
         status: response.status,
         body: await response.text(),
       });
@@ -159,28 +140,28 @@ export class AuthService {
     const token = (await response.json()) as { access_token?: string };
     if (!token.access_token) {
       throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'OAuth access token이 응답에 없습니다.', {
-        provider,
+        provider: AuthProvider.GOOGLE,
       });
     }
 
     return token.access_token;
   }
 
-  private buildLocalOAuthProfile(provider: OAuthProvider, code: string): OAuthProfile {
+  private buildLocalOAuthProfile(code: string): OAuthProfile {
     return {
       providerUserId: code,
-      nickname: `${provider}-host`,
+      nickname: 'google-host',
       email: null,
       profileImageUrl: null,
     };
   }
 
-  private async fetchOAuthProfile(provider: OAuthProvider, code: string) {
-    const config = this.getOAuthConfig(provider);
-    const accessToken = await this.exchangeAuthorizationCode(provider, code);
+  private async fetchOAuthProfile(code: string) {
+    const config = this.getOAuthConfig();
+    const accessToken = await this.exchangeAuthorizationCode(code);
 
     if (!accessToken) {
-      return this.buildLocalOAuthProfile(provider, code);
+      return this.buildLocalOAuthProfile(code);
     }
 
     const response = await fetch(config.userInfoUrl, {
@@ -191,24 +172,13 @@ export class AuthService {
 
     if (!response.ok) {
       throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'OAuth 사용자 정보 조회에 실패했습니다.', {
-        provider,
+        provider: AuthProvider.GOOGLE,
         status: response.status,
         body: await response.text(),
       });
     }
 
     const payload = (await response.json()) as Record<string, any>;
-
-    if (provider === AuthProvider.KAKAO) {
-      const kakaoAccount = payload.kakao_account ?? {};
-      const profile = kakaoAccount.profile ?? payload.properties ?? {};
-      return {
-        providerUserId: String(payload.id),
-        nickname: profile.nickname ?? 'kakao-user',
-        email: kakaoAccount.email ?? null,
-        profileImageUrl: profile.profile_image_url ?? profile.profile_image ?? null,
-      } satisfies OAuthProfile;
-    }
 
     return {
       providerUserId: String(payload.sub),
@@ -218,14 +188,11 @@ export class AuthService {
     } satisfies OAuthProfile;
   }
 
-  private async upsertOAuthUser(
-    provider: OAuthProvider,
-    profile: OAuthProfile,
-  ) {
+  private async upsertOAuthUser(profile: OAuthProfile) {
     return this.prisma.user.upsert({
       where: {
         authProvider_providerUserId: {
-          authProvider: provider,
+          authProvider: AuthProvider.GOOGLE,
           providerUserId: profile.providerUserId,
         },
       },
@@ -239,7 +206,7 @@ export class AuthService {
       create: {
         nickname: profile.nickname,
         email: profile.email,
-        authProvider: provider,
+        authProvider: AuthProvider.GOOGLE,
         providerUserId: profile.providerUserId,
         profileImageUrl: profile.profileImageUrl,
         adminYn: YnFlag.NO,
@@ -264,6 +231,10 @@ export class AuthService {
     query: Record<string, string | undefined>,
     cookieHeader?: string,
   ) {
+    if (provider !== AuthProvider.GOOGLE) {
+      throw new DomainException(HttpStatus.BAD_REQUEST, 'INVALID_REQUEST', '현재는 Google OAuth만 지원합니다.');
+    }
+
     if (query.error) {
       throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'OAuth 공급자 오류가 발생했습니다.', {
         provider,
@@ -284,8 +255,8 @@ export class AuthService {
       });
     }
 
-    const profile = await this.fetchOAuthProfile(provider, code);
-    const user = await this.upsertOAuthUser(provider, profile);
+    const profile = await this.fetchOAuthProfile(code);
+    const user = await this.upsertOAuthUser(profile);
     const sessionToken = issueSessionToken(this.buildSessionPayload(user));
     const frontendBaseUrl = process.env.APP_BASE_URL ?? 'http://localhost:3000';
 

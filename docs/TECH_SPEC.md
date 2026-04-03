@@ -44,7 +44,7 @@
 2. **설명 가능성:** 갈등 축, 슬롯 배분 이유, 만족도 계산 근거가 노출되어야 한다.
 3. **Guest-first:** 동행자는 로그인 없이 최소 단계로 참여해야 한다.
 4. **환각 차단:** LLM은 일정 구조만 만들고, 장소 선택은 캐시된 후보 목록 안에서만 허용한다.
-5. **모바일 퍼스트:** 카카오톡 인앱 브라우저 기준으로 UI/흐름을 설계한다.
+5. **모바일 퍼스트:** 모바일 인앱 브라우저 기준으로 UI/흐름을 설계한다.
 6. **MVP 우선:** 자동화보다 단순하고 검증 가능한 구조를 우선한다.
 
 ---
@@ -279,7 +279,7 @@ src/
 | `id` | bigint PK | 사용자 식별자 |
 | `nickname` | varchar(50) | 표시명 |
 | `email` | varchar(255) nullable | OAuth 제공 이메일 |
-| `auth_provider` | enum | `kakao`, `google`, `guest` |
+| `auth_provider` | enum | `google`, `guest` |
 | `provider_user_id` | varchar(100) nullable | OAuth 공급자 사용자 ID |
 | `profile_image_url` | text nullable | OAuth 프로필 이미지 |
 | `admin_yn` | char(1) | 관리자 여부 (`Y`/`N`) |
@@ -716,8 +716,6 @@ TourAPI 수집
 
 | Method | Endpoint | 인증 | 설명 |
 |---|---|---|---|
-| GET | `/api/auth/kakao` | 없음 | 카카오 OAuth 시작 |
-| GET | `/api/auth/kakao/callback` | 없음 | 카카오 OAuth 콜백 처리 |
 | GET | `/api/auth/google` | 없음 | 구글 OAuth 시작 |
 | GET | `/api/auth/google/callback` | 없음 | 구글 OAuth 콜백 처리 |
 | POST | `/api/auth/logout` | 로그인 필요 | 로그아웃 (쿠키 만료) |
@@ -935,7 +933,7 @@ tmti_server/
 
 ### 15.3 E2E 시나리오
 
-1. 방장 카카오/구글 OAuth 로그인
+1. 방장 구글 OAuth 로그인
 2. 방 생성 후 링크 복사
 3. 게스트 2~3명 링크 참여 및 검사 완료
 4. 갈등 지도 확인
@@ -986,7 +984,7 @@ tmti_server/
 
 본 기술 명세서는 PRD를 구현 가능한 수준으로 구체화하기 위해 아래 항목을 추가로 확정했다.
 
-1. 방장 인증 방식은 **카카오 OAuth / 구글 OAuth 전용**으로 한다.
+1. 방장 인증 방식은 **구글 OAuth 전용**으로 한다.
 2. TPTI 별명 생성과 갈등 요약은 **규칙/템플릿 기반**으로 시작한다.
 3. LLM은 **일정 구조 JSON 생성 전용**으로 제한한다.
 4. 장소 메타 태깅은 **규칙 기반 우선 + LLM 보정** 구조를 사용한다.

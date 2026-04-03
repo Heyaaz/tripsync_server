@@ -13,27 +13,6 @@ import {
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @Get('kakao')
-  getKakaoOAuthRedirect(@Query('redirectPath') redirectPath: string | undefined, @Res() res: any) {
-    const redirect = this.authService.getOAuthRedirect(AuthProvider.KAKAO, redirectPath);
-    res.setHeader('Set-Cookie', buildCookieHeader(getOauthStateCookieName(), redirect.state, 600));
-    return res.redirect(302, redirect.redirectUrl);
-  }
-
-  @Get('kakao/callback')
-  async handleKakaoCallback(
-    @Query() query: Record<string, string | undefined>,
-    @Headers('cookie') cookieHeader: string | undefined,
-    @Res() res: any,
-  ) {
-    const result = await this.authService.handleOAuthCallback(AuthProvider.KAKAO, query, cookieHeader);
-    res.setHeader('Set-Cookie', [
-      buildCookieHeader(getSessionCookieName(), result.sessionToken, 60 * 60 * 24 * 7),
-      buildExpiredCookieHeader(getOauthStateCookieName()),
-    ]);
-    return res.redirect(302, result.redirectUrl);
-  }
-
   @Get('google')
   getGoogleOAuthRedirect(@Query('redirectPath') redirectPath: string | undefined, @Res() res: any) {
     const redirect = this.authService.getOAuthRedirect(AuthProvider.GOOGLE, redirectPath);
