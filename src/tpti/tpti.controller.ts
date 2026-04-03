@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Param, ParseIntPipe, Post } from '@nestjs/common';
 import { SubmitTptiDto } from './dto/submit-tpti.dto';
 import { TptiService } from './tpti.service';
 
@@ -12,13 +12,22 @@ export class TptiController {
   }
 
   @Post('tpti/submit')
-  submit(@Body() dto: SubmitTptiDto) {
-    return this.tptiService.submitResult(dto);
+  @HttpCode(HttpStatus.CREATED)
+  submit(
+    @Body() dto: SubmitTptiDto,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookieHeader: string | undefined,
+  ) {
+    return this.tptiService.submitResult(dto, authorization, cookieHeader);
   }
 
   @Get('tpti/result/:userId')
-  getResult(@Param('userId', ParseIntPipe) userId: number) {
-    return this.tptiService.getLatestResult(userId);
+  getResult(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookieHeader: string | undefined,
+  ) {
+    return this.tptiService.getLatestResult(userId, authorization, cookieHeader);
   }
 
   @Get('share/tpti/:resultId')

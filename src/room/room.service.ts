@@ -1,58 +1,109 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
+import { TripRoomStatus, RoomMemberRole, YnFlag } from '../common/enums/domain.enums';
 import { ok } from '../common/dto/api-response.dto';
+import { DomainException } from '../common/errors/domain.exception';
 import { BaseSoftDeleteService } from '../common/soft-delete/base-soft-delete.service';
 import { ACTIVE_DEL_YN } from '../common/soft-delete/soft-delete.util';
+import { AuthService } from '../auth/auth.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { JoinRoomDto } from './dto/join-room.dto';
-import { RoomMemberRole, TripRoomStatus } from '../common/enums/domain.enums';
 
 @Injectable()
 export class RoomService extends BaseSoftDeleteService {
-  constructor(private readonly prisma: PrismaService) {
+  constructor(
+    private readonly authService: AuthService,
+    private readonly prisma: PrismaService,
+  ) {
     super();
   }
 
-  private buildActiveRoomWhere(roomId: bigint) {
-    return this.activeWhere({ id: roomId });
-  }
-
-  private buildActiveShareCodeWhere(shareCode: string) {
-    return this.activeWhere({ shareCode });
-  }
-
-  private async getDefaultHostUser() {
-    let user = await this.prisma.user.findFirst({
-      where: this.activeWhere({ isGuest: false }),
-      orderBy: { id: 'asc' },
+  private async requireRoomMember(roomId: bigint, userId: bigint) {
+    const membership = await this.prisma.roomMember.findFirst({
+      where: this.activeWhere({ roomId, userId }),
     });
 
-    if (!user) {
-      user = await this.prisma.user.create({
-        data: {
-          nickname: 'default-host',
-          email: null,
-          authProvider: 'google',
-          providerUserId: `bootstrap-host`,
-          profileImageUrl: null,
-          adminYn: 'N',
-          isGuest: false,
-          delYn: ACTIVE_DEL_YN,
-        },
-      });
+    if (!membership) {
+      throw new DomainException(HttpStatus.FORBIDDEN, 'FORBIDDEN', '방 멤버만 접근할 수 있습니다.');
     }
-
-    return user;
   }
 
-  async createRoom(dto: CreateRoomDto) {
-    const host = await this.getDefaultHostUser();
+  private async getActiveRoomById(roomId: bigint) {
+    const room = await this.prisma.tripRoom.findFirst({
+      where: this.activeWhere({ id: roomId }),
+      include: {
+        hostUser: true,
+        members: {
+          where: this.activeWhere({}),
+          include: { user: true },
+          orderBy: { joinedAt: 'asc' },
+        },
+        memberProfiles: {
+          where: this.activeWhere({}),
+        },
+      },
+    });
+
+    if (!room) {
+      throw new DomainException(HttpStatus.NOT_FOUND, 'ROOM_NOT_FOUND', '존재하지 않는 여행 방입니다.');
+    }
+
+    return room;
+  }
+
+  private async getActiveRoomByShareCode(shareCode: string) {
+    const room = await this.prisma.tripRoom.findFirst({
+      where: this.activeWhere({ shareCode }),
+      include: {
+        hostUser: true,
+        members: {
+          where: this.activeWhere({}),
+        },
+      },
+    });
+
+    if (!room) {
+      throw new DomainException(HttpStatus.NOT_FOUND, 'INVALID_SHARE_CODE', '유효하지 않은 공유 코드입니다.');
+    }
+
+    return room;
+  }
+
+  private generateShareCode() {
+    const suffix = Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
+    return `CNAM${new Date().getFullYear().toString().slice(-2)}${suffix}`;
+  }
+
+  private async refreshRoomStatus(roomId: bigint) {
+    const activeProfileCount = await this.prisma.roomMemberProfile.count({
+      where: this.activeWhere({ roomId }),
+    });
+
+    const nextStatus = activeProfileCount >= 2 ? TripRoomStatus.READY : TripRoomStatus.WAITING;
+    await this.prisma.tripRoom.update({
+      where: { id: roomId },
+      data: { status: nextStatus },
+    });
+
+    return nextStatus;
+  }
+
+  async createRoom(dto: CreateRoomDto, authorization?: string, cookieHeader?: string) {
+    const host = await this.authService.requireSessionUser(authorization, cookieHeader);
+    this.authService.assertHostUser(host);
+    const tripDate = new Date(dto.tripDate);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (tripDate.getTime() <= today.getTime()) {
+      throw new DomainException(HttpStatus.UNPROCESSABLE_ENTITY, 'INVALID_REQUEST', 'tripDate는 오늘 이후여야 합니다.');
+    }
+
     const room = await this.prisma.tripRoom.create({
       data: {
         hostUserId: host.id,
-        shareCode: `ROOM${Date.now().toString().slice(-6)}`,
+        shareCode: this.generateShareCode(),
         destination: dto.destination,
-        tripDate: new Date(dto.tripDate),
+        tripDate,
         status: TripRoomStatus.WAITING,
         delYn: ACTIVE_DEL_YN,
         members: {
@@ -67,27 +118,30 @@ export class RoomService extends BaseSoftDeleteService {
 
     return ok({
       roomId: Number(room.id),
-      destination: room.destination,
-      tripDate: room.tripDate.toISOString().slice(0, 10),
       shareCode: room.shareCode,
       status: room.status,
     });
   }
 
-  async getShareRoom(shareCode: string) {
-    const room = await this.prisma.tripRoom.findFirst({
-      where: this.buildActiveShareCodeWhere(shareCode),
-      include: {
-        hostUser: true,
-        members: {
-          where: this.activeWhere({}),
-        },
-      },
-    });
+  async getRoom(roomId: number, authorization?: string, cookieHeader?: string) {
+    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+    await this.requireRoomMember(BigInt(roomId), user.id);
+    const room = await this.getActiveRoomById(BigInt(roomId));
 
-    if (!room) {
-      throw new NotFoundException('여행 방을 찾을 수 없습니다.');
-    }
+    return ok({
+      roomId: Number(room.id),
+      destination: room.destination,
+      tripDate: room.tripDate.toISOString().slice(0, 10),
+      shareCode: room.shareCode,
+      status: room.status,
+      hostUserId: Number(room.hostUserId),
+      memberCount: room.members.length,
+      createdAt: room.createdAt.toISOString(),
+    });
+  }
+
+  async getShareRoom(shareCode: string) {
+    const room = await this.getActiveRoomByShareCode(shareCode);
 
     return ok({
       roomId: Number(room.id),
@@ -100,122 +154,78 @@ export class RoomService extends BaseSoftDeleteService {
     });
   }
 
-  async joinRoom(shareCode: string, dto: JoinRoomDto) {
-    const room = await this.prisma.tripRoom.findFirst({
-      where: this.buildActiveShareCodeWhere(shareCode),
-    });
+  async joinRoom(shareCode: string, dto: JoinRoomDto, authorization?: string, cookieHeader?: string) {
+    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+    const room = await this.getActiveRoomByShareCode(shareCode);
 
-    if (!room) {
-      throw new NotFoundException('여행 방을 찾을 수 없습니다.');
-    }
-
-    let userId: bigint | null = null;
-    if (dto.tptiResultId) {
+    if (dto.tptiResultId != null) {
       const result = await this.prisma.tptiResult.findFirst({
-        where: this.activeWhere({ id: BigInt(dto.tptiResultId) }),
+        where: this.activeWhere({ id: BigInt(dto.tptiResultId), userId: user.id }),
       });
-      userId = result?.userId ?? null;
 
-      if (result && userId) {
-        await this.prisma.roomMemberProfile.upsert({
-          where: {
-            roomId_userId: {
-              roomId: room.id,
-              userId,
-            },
-          },
-          update: {
-            tptiResultId: result.id,
-            mobilityScore: result.mobilityScore,
-            photoScore: result.photoScore,
-            budgetScore: result.budgetScore,
-            themeScore: result.themeScore,
-            characterName: result.characterName,
-            delYn: ACTIVE_DEL_YN,
-          },
-          create: {
-            roomId: room.id,
-            userId,
-            tptiResultId: result.id,
-            mobilityScore: result.mobilityScore,
-            photoScore: result.photoScore,
-            budgetScore: result.budgetScore,
-            themeScore: result.themeScore,
-            characterName: result.characterName,
-            delYn: ACTIVE_DEL_YN,
-          },
-        });
+      if (!result) {
+        throw new DomainException(HttpStatus.NOT_FOUND, 'TPTI_INCOMPLETE', '유효한 TPTI 결과를 찾을 수 없습니다.');
       }
-    }
 
-    if (!userId) {
-      const guest = await this.prisma.user.findFirst({
-        where: this.activeWhere({ isGuest: true }),
-        orderBy: { id: 'desc' },
-      });
-      userId = guest?.id ?? null;
-    }
-
-    if (!userId) {
-      throw new NotFoundException('방에 참여할 사용자를 찾을 수 없습니다.');
-    }
-
-    await this.prisma.roomMember.upsert({
-      where: {
-        roomId_userId: {
-          roomId: room.id,
-          userId,
+      await this.prisma.roomMemberProfile.upsert({
+        where: {
+          roomId_userId: {
+            roomId: room.id,
+            userId: user.id,
+          },
         },
-      },
-      update: {
-        delYn: ACTIVE_DEL_YN,
-      },
-      create: {
-        roomId: room.id,
-        userId,
-        role: RoomMemberRole.MEMBER,
-        delYn: ACTIVE_DEL_YN,
-      },
+        update: {
+          tptiResultId: result.id,
+          mobilityScore: result.mobilityScore,
+          photoScore: result.photoScore,
+          budgetScore: result.budgetScore,
+          themeScore: result.themeScore,
+          characterName: result.characterName,
+          delYn: ACTIVE_DEL_YN,
+        },
+        create: {
+          roomId: room.id,
+          userId: user.id,
+          tptiResultId: result.id,
+          mobilityScore: result.mobilityScore,
+          photoScore: result.photoScore,
+          budgetScore: result.budgetScore,
+          themeScore: result.themeScore,
+          characterName: result.characterName,
+          delYn: ACTIVE_DEL_YN,
+        },
+      });
+    }
+
+    const existingMembership = await this.prisma.roomMember.findFirst({
+      where: this.activeWhere({ roomId: room.id, userId: user.id }),
     });
 
-    const activeProfileCount = await this.prisma.roomMemberProfile.count({
-      where: this.activeWhere({ roomId: room.id }),
-    });
+    if (!existingMembership) {
+      await this.prisma.roomMember.create({
+        data: {
+          roomId: room.id,
+          userId: user.id,
+          role: room.hostUserId === user.id ? RoomMemberRole.HOST : RoomMemberRole.MEMBER,
+          delYn: ACTIVE_DEL_YN,
+        },
+      });
+    }
 
-    const nextStatus = activeProfileCount >= 2 ? TripRoomStatus.READY : TripRoomStatus.WAITING;
-    await this.prisma.tripRoom.update({
-      where: { id: room.id },
-      data: { status: nextStatus },
-    });
+    const roomStatus = await this.refreshRoomStatus(room.id);
 
     return ok({
       roomId: Number(room.id),
-      shareCode,
-      tptiResultId: dto.tptiResultId ?? null,
+      userId: Number(user.id),
       status: 'joined',
-      roomStatus: nextStatus,
+      roomStatus,
     });
   }
 
-  async getMembers(roomId: number) {
-    const room = await this.prisma.tripRoom.findFirst({
-      where: this.buildActiveRoomWhere(BigInt(roomId)),
-      include: {
-        members: {
-          where: this.activeWhere({}),
-          include: {
-            user: true,
-          },
-        },
-        memberProfiles: {
-          where: this.activeWhere({}),
-        },
-      },
-    });
-
-    if (!room) {
-      throw new NotFoundException('여행 방을 찾을 수 없습니다.');
-    }
+  async getMembers(roomId: number, authorization?: string, cookieHeader?: string) {
+    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+    await this.requireRoomMember(BigInt(roomId), user.id);
+    const room = await this.getActiveRoomById(BigInt(roomId));
 
     const profilesByUserId = new Map(
       room.memberProfiles.map((profile) => [profile.userId.toString(), profile]),
