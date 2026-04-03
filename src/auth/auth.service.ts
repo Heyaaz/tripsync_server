@@ -27,7 +27,7 @@ export class AuthService {
     state: string,
     redirectPath: string,
   ) {
-    const apiBaseUrl = process.env.API_BASE_URL ?? 'http://localhost:3001/api';
+    const apiBaseUrl = process.env.API_BASE_URL ?? 'http://localhost:3000/api';
     const callbackUrl = `${apiBaseUrl}/auth/${provider}/callback`;
     const combinedState = `${state}|${redirectPath}`;
 
