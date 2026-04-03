@@ -1,4 +1,7 @@
-import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Param, ParseIntPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseIntPipe, Post, UseGuards } from '@nestjs/common';
+import { User } from '@prisma/client';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { SessionAuthGuard } from '../auth/session-auth.guard';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { JoinRoomDto } from './dto/join-room.dto';
 import { RoomService } from './room.service';
@@ -8,13 +11,10 @@ export class RoomController {
   constructor(private readonly roomService: RoomService) {}
 
   @Post()
+  @UseGuards(SessionAuthGuard)
   @HttpCode(HttpStatus.CREATED)
-  createRoom(
-    @Body() dto: CreateRoomDto,
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookieHeader: string | undefined,
-  ) {
-    return this.roomService.createRoom(dto, authorization, cookieHeader);
+  createRoom(@Body() dto: CreateRoomDto, @CurrentUser() user: User) {
+    return this.roomService.createRoom(dto, user);
   }
 
   @Get('share/:shareCode')
@@ -23,31 +23,21 @@ export class RoomController {
   }
 
   @Post(':shareCode/join')
+  @UseGuards(SessionAuthGuard)
   @HttpCode(HttpStatus.CREATED)
-  joinRoom(
-    @Param('shareCode') shareCode: string,
-    @Body() dto: JoinRoomDto,
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookieHeader: string | undefined,
-  ) {
-    return this.roomService.joinRoom(shareCode, dto, authorization, cookieHeader);
+  joinRoom(@Param('shareCode') shareCode: string, @Body() dto: JoinRoomDto, @CurrentUser() user: User) {
+    return this.roomService.joinRoom(shareCode, dto, user);
   }
 
   @Get(':id/members')
-  getMembers(
-    @Param('id', ParseIntPipe) roomId: number,
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookieHeader: string | undefined,
-  ) {
-    return this.roomService.getMembers(roomId, authorization, cookieHeader);
+  @UseGuards(SessionAuthGuard)
+  getMembers(@Param('id', ParseIntPipe) roomId: number, @CurrentUser() user: User) {
+    return this.roomService.getMembers(roomId, user);
   }
 
   @Get(':id')
-  getRoom(
-    @Param('id', ParseIntPipe) roomId: number,
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookieHeader: string | undefined,
-  ) {
-    return this.roomService.getRoom(roomId, authorization, cookieHeader);
+  @UseGuards(SessionAuthGuard)
+  getRoom(@Param('id', ParseIntPipe) roomId: number, @CurrentUser() user: User) {
+    return this.roomService.getRoom(roomId, user);
   }
 }

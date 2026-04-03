@@ -1,4 +1,7 @@
-import { Controller, Get, Headers, Param, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get, Param, ParseIntPipe, UseGuards } from '@nestjs/common';
+import { User } from '@prisma/client';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { SessionAuthGuard } from '../auth/session-auth.guard';
 import { ConflictService } from './conflict.service';
 
 @Controller('rooms/:id/conflict-map')
@@ -6,11 +9,8 @@ export class ConflictController {
   constructor(private readonly conflictService: ConflictService) {}
 
   @Get()
-  getConflictMap(
-    @Param('id', ParseIntPipe) roomId: number,
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookieHeader: string | undefined,
-  ) {
-    return this.conflictService.getConflictMap(roomId, authorization, cookieHeader);
+  @UseGuards(SessionAuthGuard)
+  getConflictMap(@Param('id', ParseIntPipe) roomId: number, @CurrentUser() user: User) {
+    return this.conflictService.getConflictMap(roomId, user);
   }
 }

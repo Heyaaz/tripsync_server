@@ -1,4 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { User } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
 import { ok } from '../common/dto/api-response.dto';
@@ -98,8 +99,7 @@ export class TptiService extends BaseSoftDeleteService {
     }
   }
 
-  async submitResult(dto: SubmitTptiDto, authorization?: string, cookieHeader?: string) {
-    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+  async submitResult(dto: SubmitTptiDto, user: User) {
     const calculatedScores = this.calculateScores(dto.answers);
     const shouldApplyManualAdjustments = process.env.TPTI_MANUAL_ADJUSTMENTS_ENABLED === 'true';
     const finalScores = dto.manualAdjustments && shouldApplyManualAdjustments ? dto.manualAdjustments : calculatedScores;
@@ -132,8 +132,7 @@ export class TptiService extends BaseSoftDeleteService {
     });
   }
 
-  async getLatestResult(userId: number, authorization?: string, cookieHeader?: string) {
-    const requester = await this.authService.requireSessionUser(authorization, cookieHeader);
+  async getLatestResult(userId: number, requester: User) {
     await this.ensureResultReadable(requester.id, BigInt(userId));
 
     const result = await this.prisma.tptiResult.findFirst({

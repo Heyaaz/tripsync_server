@@ -1,4 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { User } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
 import { ok } from '../common/dto/api-response.dto';
@@ -172,8 +173,7 @@ export class ScheduleService extends BaseSoftDeleteService {
     return created;
   }
 
-  async generateSchedule(roomId: number, dto: GenerateScheduleDto, authorization?: string, cookieHeader?: string) {
-    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+  async generateSchedule(roomId: number, dto: GenerateScheduleDto, user: User) {
     this.authService.assertHostUser(user);
     const room = await this.getRoomWithMembers(roomId);
 
@@ -229,8 +229,7 @@ export class ScheduleService extends BaseSoftDeleteService {
     });
   }
 
-  async getSchedule(scheduleId: number, authorization?: string, cookieHeader?: string) {
-    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+  async getSchedule(scheduleId: number, user: User) {
     const schedule = await this.prisma.schedule.findFirst({
       where: this.activeWhere({ id: BigInt(scheduleId) }),
       include: {
@@ -282,8 +281,7 @@ export class ScheduleService extends BaseSoftDeleteService {
     });
   }
 
-  async confirmSchedule(roomId: number, dto: ConfirmScheduleDto, authorization?: string, cookieHeader?: string) {
-    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+  async confirmSchedule(roomId: number, dto: ConfirmScheduleDto, user: User) {
     this.authService.assertHostUser(user);
     const room = await this.getRoomWithMembers(roomId);
 
@@ -327,7 +325,7 @@ export class ScheduleService extends BaseSoftDeleteService {
     });
   }
 
-  async regenerateSchedule(scheduleId: number, dto: RegenerateScheduleDto, authorization?: string, cookieHeader?: string) {
+  async regenerateSchedule(scheduleId: number, dto: RegenerateScheduleDto, user: User) {
     const existing = await this.prisma.schedule.findFirst({
       where: this.activeWhere({ id: BigInt(scheduleId) }),
       include: { room: true },
@@ -345,8 +343,7 @@ export class ScheduleService extends BaseSoftDeleteService {
         startTime: dto.startTime,
         endTime: dto.endTime,
       },
-      authorization,
-      cookieHeader,
+      user,
     );
 
     return ok({

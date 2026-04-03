@@ -1,4 +1,7 @@
-import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Param, ParseIntPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseIntPipe, Post, UseGuards } from '@nestjs/common';
+import { User } from '@prisma/client';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { SessionAuthGuard } from '../auth/session-auth.guard';
 import { SubmitTptiDto } from './dto/submit-tpti.dto';
 import { TptiService } from './tpti.service';
 
@@ -12,22 +15,16 @@ export class TptiController {
   }
 
   @Post('tpti/submit')
+  @UseGuards(SessionAuthGuard)
   @HttpCode(HttpStatus.CREATED)
-  submit(
-    @Body() dto: SubmitTptiDto,
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookieHeader: string | undefined,
-  ) {
-    return this.tptiService.submitResult(dto, authorization, cookieHeader);
+  submit(@Body() dto: SubmitTptiDto, @CurrentUser() user: User) {
+    return this.tptiService.submitResult(dto, user);
   }
 
   @Get('tpti/result/:userId')
-  getResult(
-    @Param('userId', ParseIntPipe) userId: number,
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('cookie') cookieHeader: string | undefined,
-  ) {
-    return this.tptiService.getLatestResult(userId, authorization, cookieHeader);
+  @UseGuards(SessionAuthGuard)
+  getResult(@Param('userId', ParseIntPipe) userId: number, @CurrentUser() user: User) {
+    return this.tptiService.getLatestResult(userId, user);
   }
 
   @Get('share/tpti/:resultId')

@@ -132,12 +132,16 @@ describe('ScheduleService', () => {
       return callbackOrOperations;
     });
 
-    const result = await service.generateSchedule(10, {
-      destination: '충남',
-      tripDate: '2026-05-02',
-      startTime: '09:00',
-      endTime: '21:00',
-    });
+    const result = await service.generateSchedule(
+      10,
+      {
+        destination: '충남',
+        tripDate: '2026-05-02',
+        startTime: '09:00',
+        endTime: '21:00',
+      },
+      { id: BigInt(1), isGuest: false } as any,
+    );
 
     expect(consensusService.buildScheduleOptions).toHaveBeenCalled();
     expect(result.data?.version).toBe(1);
@@ -162,7 +166,11 @@ describe('ScheduleService', () => {
     prisma.schedule.update.mockResolvedValue({ id: BigInt(6003) });
     prisma.$transaction.mockImplementation(async (operations: any) => operations);
 
-    const result = await service.confirmSchedule(10, { optionType: ScheduleOptionType.DISCOVERY });
+    const result = await service.confirmSchedule(
+      10,
+      { optionType: ScheduleOptionType.DISCOVERY },
+      { id: BigInt(1), isGuest: false } as any,
+    );
 
     expect(result.data).toEqual({
       scheduleId: 6003,

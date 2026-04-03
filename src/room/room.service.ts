@@ -1,4 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { User } from '@prisma/client';
 import { TripRoomStatus, RoomMemberRole, YnFlag } from '../common/enums/domain.enums';
 import { ok } from '../common/dto/api-response.dto';
 import { DomainException } from '../common/errors/domain.exception';
@@ -88,8 +89,7 @@ export class RoomService extends BaseSoftDeleteService {
     return nextStatus;
   }
 
-  async createRoom(dto: CreateRoomDto, authorization?: string, cookieHeader?: string) {
-    const host = await this.authService.requireSessionUser(authorization, cookieHeader);
+  async createRoom(dto: CreateRoomDto, host: User) {
     this.authService.assertHostUser(host);
     const tripDate = new Date(dto.tripDate);
     const today = new Date();
@@ -123,8 +123,7 @@ export class RoomService extends BaseSoftDeleteService {
     });
   }
 
-  async getRoom(roomId: number, authorization?: string, cookieHeader?: string) {
-    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+  async getRoom(roomId: number, user: User) {
     await this.requireRoomMember(BigInt(roomId), user.id);
     const room = await this.getActiveRoomById(BigInt(roomId));
 
@@ -154,8 +153,7 @@ export class RoomService extends BaseSoftDeleteService {
     });
   }
 
-  async joinRoom(shareCode: string, dto: JoinRoomDto, authorization?: string, cookieHeader?: string) {
-    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+  async joinRoom(shareCode: string, dto: JoinRoomDto, user: User) {
     const room = await this.getActiveRoomByShareCode(shareCode);
 
     if (dto.tptiResultId != null) {
@@ -222,8 +220,7 @@ export class RoomService extends BaseSoftDeleteService {
     });
   }
 
-  async getMembers(roomId: number, authorization?: string, cookieHeader?: string) {
-    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+  async getMembers(roomId: number, user: User) {
     await this.requireRoomMember(BigInt(roomId), user.id);
     const room = await this.getActiveRoomById(BigInt(roomId));
 

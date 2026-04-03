@@ -1,4 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { User } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
 import { ok } from '../common/dto/api-response.dto';
@@ -28,8 +29,7 @@ export class ConflictService extends BaseSoftDeleteService {
     }
   }
 
-  async getConflictMap(roomId: number, authorization?: string, cookieHeader?: string) {
-    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+  async getConflictMap(roomId: number, user: User) {
     await this.requireRoomMember(BigInt(roomId), user.id);
 
     const room = await this.prisma.tripRoom.findFirst({
