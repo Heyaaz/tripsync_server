@@ -18,49 +18,100 @@ import {
 
 const SESSION_EXPIRY_SECONDS = 60 * 60 * 24 * 7;
 
+type OAuthProvider = Exclude<AuthProvider, AuthProvider.GUEST>;
+
+interface OAuthConfig {
+  authorizeUrl: string;
+  tokenUrl: string;
+  userInfoUrl: string;
+  clientId?: string;
+  clientSecret?: string;
+  callbackUrl: string;
+  scope?: string;
+}
+
+interface OAuthProfile {
+  providerUserId: string;
+  nickname: string;
+  email: string | null;
+  profileImageUrl: string | null;
+}
+
 @Injectable()
 export class AuthService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private readEnv(name: string) {
+    const value = process.env[name]?.trim();
+    if (!value || value === 'replace-me') {
+      return undefined;
+    }
+    return value;
+  }
+
+  private getCallbackUrl(provider: OAuthProvider) {
+    if (provider === AuthProvider.KAKAO) {
+      return this.readEnv('KAKAO_CALLBACK_URL') ?? `${process.env.API_BASE_URL ?? 'http://localhost:3000/api'}/auth/kakao/callback`;
+    }
+
+    return this.readEnv('GOOGLE_CALLBACK_URL') ?? `${process.env.API_BASE_URL ?? 'http://localhost:3000/api'}/auth/google/callback`;
+  }
+
+  private getOAuthConfig(provider: OAuthProvider): OAuthConfig {
+    if (provider === AuthProvider.KAKAO) {
+      return {
+        authorizeUrl: this.readEnv('KAKAO_AUTHORIZE_URL') ?? 'https://kauth.kakao.com/oauth/authorize',
+        tokenUrl: this.readEnv('KAKAO_TOKEN_URL') ?? 'https://kauth.kakao.com/oauth/token',
+        userInfoUrl: this.readEnv('KAKAO_USERINFO_URL') ?? 'https://kapi.kakao.com/v2/user/me',
+        clientId: this.readEnv('KAKAO_CLIENT_ID'),
+        clientSecret: this.readEnv('KAKAO_CLIENT_SECRET'),
+        callbackUrl: this.getCallbackUrl(AuthProvider.KAKAO),
+      };
+    }
+
+    return {
+      authorizeUrl: this.readEnv('GOOGLE_AUTHORIZE_URL') ?? 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: this.readEnv('GOOGLE_TOKEN_URL') ?? 'https://oauth2.googleapis.com/token',
+      userInfoUrl: this.readEnv('GOOGLE_USERINFO_URL') ?? 'https://openidconnect.googleapis.com/v1/userinfo',
+      clientId: this.readEnv('GOOGLE_CLIENT_ID'),
+      clientSecret: this.readEnv('GOOGLE_CLIENT_SECRET'),
+      callbackUrl: this.getCallbackUrl(AuthProvider.GOOGLE),
+      scope: 'openid profile email',
+    };
+  }
+
   private buildProviderAuthUrl(
-    provider: Exclude<AuthProvider, AuthProvider.GUEST>,
+    provider: OAuthProvider,
     state: string,
     redirectPath: string,
   ) {
-    const apiBaseUrl = process.env.API_BASE_URL ?? 'http://localhost:3000/api';
-    const callbackUrl = `${apiBaseUrl}/auth/${provider}/callback`;
+    const config = this.getOAuthConfig(provider);
     const combinedState = `${state}|${redirectPath}`;
 
-    const providerAuthorizeUrl =
-      provider === AuthProvider.KAKAO
-        ? process.env.KAKAO_AUTHORIZE_URL ?? 'https://kauth.kakao.com/oauth/authorize'
-        : process.env.GOOGLE_AUTHORIZE_URL ?? 'https://accounts.google.com/o/oauth2/v2/auth';
-    const clientId =
-      provider === AuthProvider.KAKAO ? process.env.KAKAO_CLIENT_ID : process.env.GOOGLE_CLIENT_ID;
-
-    if (!clientId) {
-      return `${callbackUrl}?code=local-${provider}-code&state=${encodeURIComponent(combinedState)}&redirectPath=${encodeURIComponent(
+    if (!config.clientId) {
+      return `${config.callbackUrl}?code=local-${provider}-code&state=${encodeURIComponent(combinedState)}&redirectPath=${encodeURIComponent(
         redirectPath,
       )}`;
     }
 
     const params = new URLSearchParams({
       response_type: 'code',
-      client_id: clientId,
-      redirect_uri: callbackUrl,
+      client_id: config.clientId,
+      redirect_uri: config.callbackUrl,
       state: combinedState,
     });
 
     if (provider === AuthProvider.GOOGLE) {
-      params.set('scope', 'openid profile email');
+      params.set('scope', config.scope ?? 'openid profile email');
       params.set('access_type', 'offline');
       params.set('prompt', 'consent');
+      params.set('include_granted_scopes', 'true');
     }
 
-    return `${providerAuthorizeUrl}?${params.toString()}`;
+    return `${config.authorizeUrl}?${params.toString()}`;
   }
 
-  getOAuthRedirect(provider: Exclude<AuthProvider, AuthProvider.GUEST>, redirectPath?: string) {
+  getOAuthRedirect(provider: OAuthProvider, redirectPath?: string) {
     const normalizedRedirectPath = redirectPath ?? '/rooms/new';
     const state = randomUUID();
     const redirectUrl = this.buildProviderAuthUrl(provider, state, normalizedRedirectPath);
@@ -72,27 +123,125 @@ export class AuthService {
     };
   }
 
+  private async exchangeAuthorizationCode(provider: OAuthProvider, code: string) {
+    const config = this.getOAuthConfig(provider);
+    if (!config.clientId) {
+      return null;
+    }
+
+    const params = new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: config.clientId,
+      redirect_uri: config.callbackUrl,
+      code,
+    });
+
+    if (config.clientSecret) {
+      params.set('client_secret', config.clientSecret);
+    }
+
+    const response = await fetch(config.tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
+      },
+      body: params.toString(),
+    });
+
+    if (!response.ok) {
+      throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'OAuth 토큰 교환에 실패했습니다.', {
+        provider,
+        status: response.status,
+        body: await response.text(),
+      });
+    }
+
+    const token = (await response.json()) as { access_token?: string };
+    if (!token.access_token) {
+      throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'OAuth access token이 응답에 없습니다.', {
+        provider,
+      });
+    }
+
+    return token.access_token;
+  }
+
+  private buildLocalOAuthProfile(provider: OAuthProvider, code: string): OAuthProfile {
+    return {
+      providerUserId: code,
+      nickname: `${provider}-host`,
+      email: null,
+      profileImageUrl: null,
+    };
+  }
+
+  private async fetchOAuthProfile(provider: OAuthProvider, code: string) {
+    const config = this.getOAuthConfig(provider);
+    const accessToken = await this.exchangeAuthorizationCode(provider, code);
+
+    if (!accessToken) {
+      return this.buildLocalOAuthProfile(provider, code);
+    }
+
+    const response = await fetch(config.userInfoUrl, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'OAuth 사용자 정보 조회에 실패했습니다.', {
+        provider,
+        status: response.status,
+        body: await response.text(),
+      });
+    }
+
+    const payload = (await response.json()) as Record<string, any>;
+
+    if (provider === AuthProvider.KAKAO) {
+      const kakaoAccount = payload.kakao_account ?? {};
+      const profile = kakaoAccount.profile ?? payload.properties ?? {};
+      return {
+        providerUserId: String(payload.id),
+        nickname: profile.nickname ?? 'kakao-user',
+        email: kakaoAccount.email ?? null,
+        profileImageUrl: profile.profile_image_url ?? profile.profile_image ?? null,
+      } satisfies OAuthProfile;
+    }
+
+    return {
+      providerUserId: String(payload.sub),
+      nickname: payload.name ?? (typeof payload.email === 'string' ? payload.email.split('@')[0] : 'google-user'),
+      email: payload.email ?? null,
+      profileImageUrl: payload.picture ?? null,
+    } satisfies OAuthProfile;
+  }
+
   private async upsertOAuthUser(
-    provider: Exclude<AuthProvider, AuthProvider.GUEST>,
-    providerUserId: string,
+    provider: OAuthProvider,
+    profile: OAuthProfile,
   ) {
     return this.prisma.user.upsert({
       where: {
         authProvider_providerUserId: {
           authProvider: provider,
-          providerUserId,
+          providerUserId: profile.providerUserId,
         },
       },
       update: {
+        nickname: profile.nickname,
+        email: profile.email,
+        profileImageUrl: profile.profileImageUrl,
         delYn: ACTIVE_DEL_YN,
         isGuest: false,
       },
       create: {
-        nickname: `${provider}-host`,
-        email: null,
+        nickname: profile.nickname,
+        email: profile.email,
         authProvider: provider,
-        providerUserId,
-        profileImageUrl: null,
+        providerUserId: profile.providerUserId,
+        profileImageUrl: profile.profileImageUrl,
         adminYn: YnFlag.NO,
         isGuest: false,
         delYn: ACTIVE_DEL_YN,
@@ -111,7 +260,7 @@ export class AuthService {
   }
 
   async handleOAuthCallback(
-    provider: Exclude<AuthProvider, AuthProvider.GUEST>,
+    provider: OAuthProvider,
     query: Record<string, string | undefined>,
     cookieHeader?: string,
   ) {
@@ -128,8 +277,15 @@ export class AuthService {
       throw new DomainException(HttpStatus.UNAUTHORIZED, 'OAUTH_STATE_INVALID', 'OAuth state 검증에 실패했습니다.');
     }
 
-    const providerUserId = query.code ?? `mock-${provider}-${randomUUID().slice(0, 8)}`;
-    const user = await this.upsertOAuthUser(provider, providerUserId);
+    const code = query.code;
+    if (!code) {
+      throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'OAuth authorization code가 없습니다.', {
+        provider,
+      });
+    }
+
+    const profile = await this.fetchOAuthProfile(provider, code);
+    const user = await this.upsertOAuthUser(provider, profile);
     const sessionToken = issueSessionToken(this.buildSessionPayload(user));
     const frontendBaseUrl = process.env.APP_BASE_URL ?? 'http://localhost:3000';
 
