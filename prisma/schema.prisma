@@ -1,0 +1,226 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum YnFlag {
+  Y
+  N
+}
+
+enum AuthProvider {
+  kakao
+  google
+  guest
+}
+
+enum TripRoomStatus {
+  waiting
+  ready
+  completed
+}
+
+enum RoomMemberRole {
+  host
+  member
+}
+
+enum SlotType {
+  common
+  personal
+}
+
+model User {
+  id               BigInt               @id @default(autoincrement()) @db.UnsignedBigInt
+  nickname         String               @db.VarChar(50)
+  email            String?              @db.VarChar(255)
+  authProvider     AuthProvider         @map("auth_provider")
+  providerUserId   String?              @map("provider_user_id") @db.VarChar(100)
+  profileImageUrl  String?              @map("profile_image_url") @db.Text
+  adminYn          YnFlag               @default(N) @map("admin_yn")
+  isGuest          Boolean              @default(false) @map("is_guest")
+  delYn            YnFlag               @default(N) @map("del_yn")
+  createdAt        DateTime             @default(now()) @map("created_at")
+  tptiResults      TptiResult[]
+  hostedRooms      TripRoom[]           @relation("HostedRooms")
+  roomMembers      RoomMember[]
+  roomProfiles     RoomMemberProfile[]
+  satisfaction     SatisfactionScore[]
+  targetSlots      ScheduleSlot[]       @relation("SlotTargetUser")
+
+  @@unique([authProvider, providerUserId], map: "uq_users_provider")
+  @@index([email], map: "idx_users_email")
+  @@map("users")
+}
+
+model TptiResult {
+  id                 BigInt              @id @default(autoincrement()) @db.UnsignedBigInt
+  userId             BigInt              @map("user_id") @db.UnsignedBigInt
+  mobilityScore      Int                 @map("mobility_score") @db.UnsignedTinyInt
+  photoScore         Int                 @map("photo_score") @db.UnsignedTinyInt
+  budgetScore        Int                 @map("budget_score") @db.UnsignedTinyInt
+  themeScore         Int                 @map("theme_score") @db.UnsignedTinyInt
+  characterName      String              @map("character_name") @db.VarChar(100)
+  sourceAnswers      Json                @map("source_answers")
+  isManuallyAdjusted Boolean             @default(false) @map("is_manually_adjusted")
+  delYn              YnFlag              @default(N) @map("del_yn")
+  createdAt          DateTime            @default(now()) @map("created_at")
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roomProfiles       RoomMemberProfile[]
+
+  @@index([userId], map: "idx_tpti_results_user_id")
+  @@map("tpti_results")
+}
+
+model TripRoom {
+  id           BigInt              @id @default(autoincrement()) @db.UnsignedBigInt
+  hostUserId   BigInt              @map("host_user_id") @db.UnsignedBigInt
+  shareCode    String              @unique(map: "uq_trip_rooms_share_code") @map("share_code") @db.VarChar(12)
+  destination  String              @db.VarChar(100)
+  tripDate     DateTime            @map("trip_date") @db.Date
+  status       TripRoomStatus      @default(waiting)
+  delYn        YnFlag              @default(N) @map("del_yn")
+  createdAt    DateTime            @default(now()) @map("created_at")
+  hostUser     User                @relation("HostedRooms", fields: [hostUserId], references: [id], onDelete: Restrict)
+  members      RoomMember[]
+  memberProfiles RoomMemberProfile[]
+  conflictMaps ConflictMap[]
+  schedules    Schedule[]
+
+  @@index([hostUserId], map: "idx_trip_rooms_host_user_id")
+  @@map("trip_rooms")
+}
+
+model RoomMember {
+  id        BigInt           @id @default(autoincrement()) @db.UnsignedBigInt
+  roomId     BigInt          @map("room_id") @db.UnsignedBigInt
+  userId     BigInt          @map("user_id") @db.UnsignedBigInt
+  role       RoomMemberRole
+  joinedAt   DateTime        @default(now()) @map("joined_at")
+  delYn      YnFlag          @default(N) @map("del_yn")
+  room       TripRoom        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user       User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([roomId, userId], map: "uq_room_members_room_user")
+  @@index([userId], map: "idx_room_members_user_id")
+  @@map("room_members")
+}
+
+model RoomMemberProfile {
+  id            BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  roomId         BigInt       @map("room_id") @db.UnsignedBigInt
+  userId         BigInt       @map("user_id") @db.UnsignedBigInt
+  tptiResultId   BigInt       @map("tpti_result_id") @db.UnsignedBigInt
+  mobilityScore  Int          @map("mobility_score") @db.UnsignedTinyInt
+  photoScore     Int          @map("photo_score") @db.UnsignedTinyInt
+  budgetScore    Int          @map("budget_score") @db.UnsignedTinyInt
+  themeScore     Int          @map("theme_score") @db.UnsignedTinyInt
+  characterName  String       @map("character_name") @db.VarChar(100)
+  delYn          YnFlag       @default(N) @map("del_yn")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  room           TripRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  tptiResult     TptiResult   @relation(fields: [tptiResultId], references: [id], onDelete: Restrict)
+
+  @@unique([roomId, userId], map: "uq_room_member_profiles_room_user")
+  @@index([tptiResultId], map: "idx_room_member_profiles_tpti_result_id")
+  @@map("room_member_profiles")
+}
+
+model ConflictMap {
+  id           BigInt      @id @default(autoincrement()) @db.UnsignedBigInt
+  roomId        BigInt     @map("room_id") @db.UnsignedBigInt
+  commonAxes    Json       @map("common_axes")
+  conflictAxes  Json       @map("conflict_axes")
+  summaryText   String     @map("summary_text") @db.Text
+  delYn         YnFlag     @default(N) @map("del_yn")
+  createdAt     DateTime   @default(now()) @map("created_at")
+  room          TripRoom   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([roomId], map: "idx_conflict_maps_room_id")
+  @@map("conflict_maps")
+}
+
+model Schedule {
+  id                BigInt               @id @default(autoincrement()) @db.UnsignedBigInt
+  roomId             BigInt               @map("room_id") @db.UnsignedBigInt
+  version            Int
+  generationInput    Json                 @map("generation_input")
+  groupSatisfaction  Int                  @map("group_satisfaction") @db.UnsignedTinyInt
+  llmProvider        String?              @map("llm_provider") @db.VarChar(50)
+  delYn              YnFlag               @default(N) @map("del_yn")
+  createdAt          DateTime             @default(now()) @map("created_at")
+  room               TripRoom             @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  slots              ScheduleSlot[]
+  satisfactionScores SatisfactionScore[]
+
+  @@unique([roomId, version], map: "uq_schedules_room_version")
+  @@index([roomId], map: "idx_schedules_room_id")
+  @@map("schedules")
+}
+
+model ScheduleSlot {
+  id           BigInt      @id @default(autoincrement()) @db.UnsignedBigInt
+  scheduleId    BigInt     @map("schedule_id") @db.UnsignedBigInt
+  startTime     DateTime   @map("start_time")
+  endTime       DateTime   @map("end_time")
+  placeId       BigInt     @map("place_id") @db.UnsignedBigInt
+  slotType      SlotType   @map("slot_type")
+  targetUserId  BigInt?    @map("target_user_id") @db.UnsignedBigInt
+  reasonAxis    String     @map("reason_axis") @db.VarChar(20)
+  orderIndex    Int        @map("order_index")
+  delYn         YnFlag     @default(N) @map("del_yn")
+  schedule      Schedule   @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  place         Place      @relation(fields: [placeId], references: [id], onDelete: Restrict)
+  targetUser    User?      @relation("SlotTargetUser", fields: [targetUserId], references: [id], onDelete: SetNull)
+
+  @@index([scheduleId], map: "idx_schedule_slots_schedule_id")
+  @@index([scheduleId, orderIndex], map: "idx_schedule_slots_schedule_order")
+  @@index([targetUserId], map: "idx_schedule_slots_target_user_id")
+  @@map("schedule_slots")
+}
+
+model Place {
+  id              BigInt          @id @default(autoincrement()) @db.UnsignedBigInt
+  tourApiId       String          @unique(map: "uq_places_tour_api_id") @map("tour_api_id") @db.VarChar(100)
+  name            String          @db.VarChar(255)
+  address         String          @db.VarChar(255)
+  latitude        Decimal         @db.Decimal(10, 7)
+  longitude       Decimal         @db.Decimal(10, 7)
+  category        String          @db.VarChar(100)
+  imageUrl        String?         @map("image_url") @db.Text
+  operatingHours  Json?           @map("operating_hours")
+  admissionFee    String?         @map("admission_fee") @db.VarChar(100)
+  mobilityScore   Int             @map("mobility_score") @db.UnsignedTinyInt
+  photoScore      Int             @map("photo_score") @db.UnsignedTinyInt
+  budgetScore     Int             @map("budget_score") @db.UnsignedTinyInt
+  themeScore      Int             @map("theme_score") @db.UnsignedTinyInt
+  metadataTags    Json?           @map("metadata_tags")
+  delYn           YnFlag          @default(N) @map("del_yn")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+  scheduleSlots   ScheduleSlot[]
+
+  @@index([category], map: "idx_places_category")
+  @@index([latitude, longitude], map: "idx_places_lat_lng")
+  @@map("places")
+}
+
+model SatisfactionScore {
+  id          BigInt     @id @default(autoincrement()) @db.UnsignedBigInt
+  scheduleId   BigInt    @map("schedule_id") @db.UnsignedBigInt
+  userId       BigInt    @map("user_id") @db.UnsignedBigInt
+  score        Int       @db.UnsignedTinyInt
+  breakdown    Json
+  delYn        YnFlag    @default(N) @map("del_yn")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  schedule     Schedule  @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  user         User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([scheduleId, userId], map: "uq_satisfaction_scores_schedule_user")
+  @@index([userId], map: "idx_satisfaction_scores_user_id")
+  @@map("satisfaction_scores")
+}
