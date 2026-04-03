@@ -53,6 +53,7 @@ describe('LlmService', () => {
   it('validates openai structured output against candidate place ids', async () => {
     process.env.OPENAI_API_KEY = 'openai-key';
     const service = new LlmService();
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(1_085);
     const fetchMock = jest.spyOn(global, 'fetch' as any).mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -67,8 +68,10 @@ describe('LlmService', () => {
       summary: 'LLM 요약',
       slots: [{ orderIndex: 1, placeId: 101, reason: '후보 내 장소 선택' }],
       provider: 'openai:gpt-5',
+      latencyMs: 85,
     });
 
+    nowSpy.mockRestore();
     fetchMock.mockRestore();
   });
 

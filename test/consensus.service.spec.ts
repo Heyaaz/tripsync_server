@@ -470,6 +470,7 @@ describe('ConsensusService', () => {
     llmService.refineScheduleOption.mockResolvedValue({
       summary: 'LLM이 자연스러운 이동 순서로 다듬은 일정입니다.',
       provider: 'openai:gpt-5',
+      latencyMs: 87,
       slots: [
         { orderIndex: 1, placeId: 104, reason: '오전 시작은 접근성이 좋은 역사 코스' },
         { orderIndex: 2, placeId: 103, reason: '점심 시간대 식사 슬롯 반영' },
@@ -492,6 +493,8 @@ describe('ConsensusService', () => {
     const balanced = options.find((option) => option.optionType === ScheduleOptionType.BALANCED)!;
     expect(balanced.summary).toContain('LLM');
     expect(balanced.llmProvider).toBe('openai:gpt-5');
+    expect(balanced.llmLatencyMs).toBe(87);
+    expect(balanced.fallbackUsed).toBe(false);
     expect(balanced.slots[0]?.placeId).toBe(104);
     expect(balanced.slots[1]?.reasonText).toContain('점심 시간대');
   });

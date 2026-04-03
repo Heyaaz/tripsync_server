@@ -55,6 +55,7 @@ export interface LlmRefineResult {
     reason: string;
   }>;
   provider: string;
+  latencyMs: number;
 }
 
 @Injectable()
@@ -92,13 +93,25 @@ export class LlmService {
       return null;
     }
 
+    const startedAt = Date.now();
     try {
-      if (provider === 'openai') {
-        return await this.requestOpenAi(input);
+      const result = provider === 'openai'
+        ? await this.requestOpenAi(input)
+        : await this.requestGemini(input);
+      const latencyMs = Date.now() - startedAt;
+      if (!result) {
+        this.logger.warn(`LLM refinement returned invalid structured output provider=${provider} latencyMs=${latencyMs}`);
+        return null;
       }
-      return await this.requestGemini(input);
+      return {
+        ...result,
+        latencyMs,
+      };
     } catch (error) {
-      this.logger.warn(`LLM refinement failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+      const latencyMs = Date.now() - startedAt;
+      this.logger.warn(
+        `LLM refinement failed provider=${provider} latencyMs=${latencyMs} reason=${error instanceof Error ? error.message : 'unknown error'}`,
+      );
       return null;
     }
   }
@@ -194,7 +207,7 @@ export class LlmService {
     };
   }
 
-  private async requestOpenAi(input: LlmRefineRequest): Promise<LlmRefineResult | null> {
+  private async requestOpenAi(input: LlmRefineRequest): Promise<Omit<LlmRefineResult, 'latencyMs'> | null> {
     const apiKey = this.readEnv('OPENAI_API_KEY');
     if (!apiKey) {
       return null;
@@ -269,7 +282,7 @@ export class LlmService {
     return null;
   }
 
-  private async requestGemini(input: LlmRefineRequest): Promise<LlmRefineResult | null> {
+  private async requestGemini(input: LlmRefineRequest): Promise<Omit<LlmRefineResult, 'latencyMs'> | null> {
     const apiKey = this.readEnv('GEMINI_API_KEY');
     if (!apiKey) {
       return null;

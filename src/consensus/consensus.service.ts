@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   ConflictSeverity,
   ReasonAxis,
@@ -78,6 +78,8 @@ export interface ScheduleOptionDraft {
   slots: ScheduleSlotDraft[];
   satisfactionByUser: SatisfactionDraft[];
   llmProvider: string;
+  llmLatencyMs: number | null;
+  fallbackUsed: boolean;
 }
 
 interface SlotShape {
@@ -127,6 +129,8 @@ const SLOT_TEMPLATES: Record<5 | 6 | 7, number[]> = {
 
 @Injectable()
 export class ConsensusService {
+  private readonly logger = new Logger(ConsensusService.name);
+
   constructor(private readonly llmService: LlmService = new LlmService()) {}
 
   analyzeGroup(members: MemberSnapshot[]) {
@@ -557,6 +561,10 @@ export class ConsensusService {
       Math.min(...satisfactionByUser.map((entry) => entry.score)),
     );
 
+    this.logger.log(
+      `schedule_option optionType=${optionType} roomId=${context.roomId} provider=${llmRefined?.provider ?? 'deterministic-consensus'} latencyMs=${llmRefined?.latencyMs ?? 0} fallbackUsed=${llmRefined ? 'false' : 'true'} groupSatisfaction=${groupSatisfaction}`,
+    );
+
     return {
       optionType,
       label,
@@ -565,6 +573,8 @@ export class ConsensusService {
       slots: finalSlots,
       satisfactionByUser,
       llmProvider: llmRefined?.provider ?? 'deterministic-consensus',
+      llmLatencyMs: llmRefined?.latencyMs ?? null,
+      fallbackUsed: !llmRefined,
     };
   }
 
