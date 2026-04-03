@@ -5,6 +5,7 @@ describe('PlaceService', () => {
     place: {
       upsert: jest.fn(),
       findMany: jest.fn(),
+      findUnique: jest.fn(),
     },
   };
   const service = new PlaceService(prisma as any);
@@ -35,6 +36,7 @@ describe('PlaceService', () => {
   });
 
   it('upserts only valid places', async () => {
+    prisma.place.findUnique.mockResolvedValue(null);
     prisma.place.upsert.mockResolvedValue({});
     const result = await service.upsertTourApiPlaces([
       { contentid: '1', contenttypeid: '12', title: '공산성', addr1: '충남 공주', mapx: '127.1', mapy: '36.4' },
@@ -42,7 +44,30 @@ describe('PlaceService', () => {
     ]);
 
     expect(prisma.place.upsert).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ synced: 1, skipped: 1 });
+    expect(result).toEqual({ synced: 1, skipped: 1, unchanged: 0 });
+  });
+
+  it('skips unchanged upserts when source modified time matches', async () => {
+    prisma.place.findUnique.mockResolvedValue({
+      id: BigInt(1),
+      delYn: 'N',
+      metadataTags: { sourceModifiedTime: '20260403101010' },
+    });
+
+    const result = await service.upsertTourApiPlaces([
+      {
+        contentid: '1',
+        contenttypeid: '12',
+        title: '공산성',
+        addr1: '충남 공주',
+        mapx: '127.1',
+        mapy: '36.4',
+        modifiedtime: '20260403101010',
+      },
+    ]);
+
+    expect(prisma.place.upsert).not.toHaveBeenCalled();
+    expect(result).toEqual({ synced: 0, skipped: 0, unchanged: 1 });
   });
 
   it('merges detailCommon/detailIntro into existing place', async () => {
@@ -111,5 +136,25 @@ describe('PlaceService', () => {
         }),
       }),
     );
+  });
+
+  it('detects stale detail enrichment from source modified time', () => {
+    expect(
+      service.needsDetailEnrichment({
+        metadataTags: {
+          sourceModifiedTime: '20260403120000',
+          detailEnrichedAt: '2026-04-03T10:00:00+09:00',
+        },
+      } as any),
+    ).toBe(true);
+
+    expect(
+      service.needsDetailEnrichment({
+        metadataTags: {
+          sourceModifiedTime: '20260403100000',
+          detailEnrichedAt: '2026-04-03T10:30:00+09:00',
+        },
+      } as any),
+    ).toBe(false);
   });
 });

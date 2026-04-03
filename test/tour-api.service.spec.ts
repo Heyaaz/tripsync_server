@@ -8,6 +8,7 @@ describe('TourApiService', () => {
     upsertTourApiPlaces: jest.fn(),
     listPlacesForEnrichment: jest.fn(),
     enrichPlaceDetails: jest.fn(),
+    needsDetailEnrichment: jest.fn(),
   };
   const service = new TourApiService(authService as any, placeService as any);
 
@@ -33,7 +34,7 @@ describe('TourApiService', () => {
         },
       }),
     } as Response);
-    placeService.upsertTourApiPlaces.mockResolvedValue({ synced: 1, skipped: 0 });
+    placeService.upsertTourApiPlaces.mockResolvedValue({ synced: 1, skipped: 0, unchanged: 0 });
 
     const result = await service.syncChungnamPlaces({ isGuest: false } as any);
 
@@ -44,14 +45,20 @@ describe('TourApiService', () => {
     fetchMock.mockRestore();
   });
 
-  it('enriches a limited batch of places with detailCommon/detailIntro', async () => {
+  it('enriches a limited batch of stale places with detailCommon/detailIntro', async () => {
     placeService.listPlacesForEnrichment.mockResolvedValue([
       {
         id: BigInt(1),
         tourApiId: '2750143',
         metadataTags: { contentTypeId: '14' },
       },
+      {
+        id: BigInt(2),
+        tourApiId: '2750144',
+        metadataTags: { contentTypeId: '14' },
+      },
     ]);
+    placeService.needsDetailEnrichment.mockReturnValueOnce(true).mockReturnValueOnce(false);
 
     const fetchMock = jest
       .spyOn(global, 'fetch' as any)
@@ -76,9 +83,46 @@ describe('TourApiService', () => {
 
     const result = await service.enrichChungnamPlaces({ isGuest: false } as any, { limit: 1 });
 
-    expect(placeService.listPlacesForEnrichment).toHaveBeenCalledWith(1);
+    expect(placeService.listPlacesForEnrichment).toHaveBeenCalledWith(5);
     expect(placeService.enrichPlaceDetails).toHaveBeenCalledTimes(1);
-    expect(result.data).toEqual({ limit: 1, enriched: 1, skipped: 0 });
+    expect(result.data).toEqual({ limit: 1, scanned: 2, queued: 1, enriched: 1, skipped: 1, failed: 0 });
+
+    fetchMock.mockRestore();
+  });
+
+  it('retries detail fetches and counts failed enrichments', async () => {
+    placeService.listPlacesForEnrichment.mockResolvedValue([
+      {
+        id: BigInt(1),
+        tourApiId: '2750143',
+        metadataTags: { contentTypeId: '14' },
+      },
+    ]);
+    placeService.needsDetailEnrichment.mockReturnValue(true);
+
+    const fetchMock = jest
+      .spyOn(global, 'fetch' as any)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: async () => 'boom',
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: async () => 'boom',
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: async () => 'boom',
+      } as Response);
+
+    const result = await service.enrichChungnamPlaces({ isGuest: false } as any, { limit: 1 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(placeService.enrichPlaceDetails).not.toHaveBeenCalled();
+    expect(result.data).toEqual({ limit: 1, scanned: 1, queued: 1, enriched: 0, skipped: 0, failed: 1 });
 
     fetchMock.mockRestore();
   });

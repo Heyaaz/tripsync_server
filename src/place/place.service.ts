@@ -60,6 +60,8 @@ interface ParsedOperatingRange {
   sourceKey: string;
 }
 
+type PlaceMetadataMap = Record<string, unknown>;
+
 @Injectable()
 export class PlaceService {
   constructor(private readonly prisma: PrismaService) {}
@@ -149,6 +151,7 @@ export class PlaceService {
       cat3: item.cat3 ?? null,
       tel: item.tel ?? null,
       zipcode: item.zipcode ?? null,
+      sourceModifiedTime: item.modifiedtime ?? null,
       source: 'tourapi',
     };
 
@@ -174,11 +177,34 @@ export class PlaceService {
   async upsertTourApiPlaces(items: TourApiPlaceItem[]) {
     let synced = 0;
     let skipped = 0;
+    let unchanged = 0;
 
     for (const item of items) {
       const normalized = this.normalizeTourApiPlace(item);
       if (!normalized || Number.isNaN(normalized.latitude) || Number.isNaN(normalized.longitude)) {
         skipped += 1;
+        continue;
+      }
+
+      const existing = await this.prisma.place.findUnique({
+        where: { tourApiId: normalized.tourApiId },
+        select: {
+          id: true,
+          delYn: true,
+          metadataTags: true,
+        },
+      });
+
+      const existingMetadata = this.readMetadataObject(existing?.metadataTags);
+      const nextMetadata = this.readMetadataObject(normalized.metadataTags);
+      if (
+        existing &&
+        existing.delYn === 'N' &&
+        existingMetadata?.sourceModifiedTime &&
+        nextMetadata?.sourceModifiedTime &&
+        existingMetadata.sourceModifiedTime === nextMetadata.sourceModifiedTime
+      ) {
+        unchanged += 1;
         continue;
       }
 
@@ -223,9 +249,15 @@ export class PlaceService {
       synced += 1;
     }
 
-    return { synced, skipped };
+    return { synced, skipped, unchanged };
   }
 
+  private readMetadataObject(metadataTags: unknown) {
+    if (!metadataTags || typeof metadataTags !== 'object' || Array.isArray(metadataTags)) {
+      return null;
+    }
+    return metadataTags as PlaceMetadataMap;
+  }
 
   async listPlacesForEnrichment(limit: number) {
     return this.prisma.place.findMany({
@@ -233,6 +265,52 @@ export class PlaceService {
       orderBy: { id: 'asc' },
       take: limit,
     });
+  }
+
+  needsDetailEnrichment(place: { metadataTags: Prisma.JsonValue | null }) {
+    const metadata = this.readMetadataObject(place.metadataTags);
+    if (!metadata) {
+      return true;
+    }
+
+    const detailEnrichedAt = this.toEpochMs(metadata.detailEnrichedAt);
+    const sourceModifiedTime = this.parseSourceModifiedTime(metadata.sourceModifiedTime);
+    if (!detailEnrichedAt) {
+      return true;
+    }
+    if (!sourceModifiedTime) {
+      return false;
+    }
+
+    return sourceModifiedTime > detailEnrichedAt;
+  }
+
+  private toEpochMs(value: unknown) {
+    if (!value) {
+      return null;
+    }
+    const epoch = Date.parse(String(value));
+    return Number.isNaN(epoch) ? null : epoch;
+  }
+
+  private parseSourceModifiedTime(value: unknown) {
+    if (!value) {
+      return null;
+    }
+
+    const digits = String(value).replace(/\D/g, '');
+    if (digits.length < 8) {
+      return null;
+    }
+
+    const year = digits.slice(0, 4);
+    const month = digits.slice(4, 6);
+    const day = digits.slice(6, 8);
+    const hour = digits.slice(8, 10) || '00';
+    const minute = digits.slice(10, 12) || '00';
+    const second = digits.slice(12, 14) || '00';
+    const epoch = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}+09:00`);
+    return Number.isNaN(epoch) ? null : epoch;
   }
 
   private toMinutes(hours: number, minutes: number) {

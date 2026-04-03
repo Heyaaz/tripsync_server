@@ -15,6 +15,8 @@ import { EnrichPlacesDto } from './dto/enrich-places.dto';
 const CHUNGNAM_AREA_CODE = 34;
 const SUPPORTED_CONTENT_TYPES = [12, 14, 15, 28, 32, 38, 39] as const;
 const PAGE_SIZE = 100;
+const DETAIL_FETCH_RETRY_COUNT = 2;
+const ENRICH_SCAN_MULTIPLIER = 5;
 
 @Injectable()
 export class TourApiService {
@@ -44,6 +46,18 @@ export class TourApiService {
       mobileApp: this.readEnv('TOUR_API_MOBILE_APP') ?? 'TripSync',
       responseType: this.readEnv('TOUR_API_RESPONSE_TYPE') ?? 'json',
     };
+  }
+
+  private async withRetry<T>(task: () => Promise<T>, attempts = DETAIL_FETCH_RETRY_COUNT + 1): Promise<T> {
+    let lastError: unknown;
+    for (let index = 0; index < attempts; index += 1) {
+      try {
+        return await task();
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError;
   }
 
   private async fetchAreaBasedListPage(contentTypeId: number, pageNo: number) {
@@ -181,10 +195,11 @@ export class TourApiService {
   async syncChungnamPlaces(user: User) {
     this.authService.assertHostUser(user);
 
-    const byType: Array<{ contentTypeId: number; totalCount: number; synced: number; skipped: number }> = [];
+    const byType: Array<{ contentTypeId: number; totalCount: number; synced: number; skipped: number; unchanged: number }> = [];
     let totalFetched = 0;
     let totalSynced = 0;
     let totalSkipped = 0;
+    let totalUnchanged = 0;
 
     for (const contentTypeId of SUPPORTED_CONTENT_TYPES) {
       const result = await this.fetchAllByContentType(contentTypeId);
@@ -194,10 +209,12 @@ export class TourApiService {
         totalCount: result.totalCount,
         synced: upserted.synced,
         skipped: upserted.skipped,
+        unchanged: upserted.unchanged,
       });
       totalFetched += result.items.length;
       totalSynced += upserted.synced;
       totalSkipped += upserted.skipped;
+      totalUnchanged += upserted.unchanged;
     }
 
     return ok({
@@ -206,6 +223,7 @@ export class TourApiService {
       totalFetched,
       totalSynced,
       totalSkipped,
+      totalUnchanged,
       byType,
     });
   }
@@ -222,27 +240,37 @@ export class TourApiService {
     this.authService.assertHostUser(user);
 
     const limit = dto?.limit ?? 50;
-    const places = await this.placeService.listPlacesForEnrichment(limit);
+    const scanLimit = Math.max(limit, limit * ENRICH_SCAN_MULTIPLIER);
+    const places = await this.placeService.listPlacesForEnrichment(scanLimit);
+    const candidates = places.filter((place) => this.placeService.needsDetailEnrichment(place)).slice(0, limit);
     let enriched = 0;
     let skipped = 0;
+    let failed = 0;
 
-    for (const place of places) {
+    for (const place of candidates) {
       const contentTypeId = this.getContentTypeIdFromMetadata(place.metadataTags);
       if (!contentTypeId) {
         skipped += 1;
         continue;
       }
 
-      const common = await this.fetchDetailCommon(place.tourApiId);
-      const intro = await this.fetchDetailIntro(place.tourApiId, contentTypeId);
-      await this.placeService.enrichPlaceDetails(place.id, common, intro);
-      enriched += 1;
+      try {
+        const common = await this.withRetry(() => this.fetchDetailCommon(place.tourApiId));
+        const intro = await this.withRetry(() => this.fetchDetailIntro(place.tourApiId, contentTypeId));
+        await this.placeService.enrichPlaceDetails(place.id, common, intro);
+        enriched += 1;
+      } catch {
+        failed += 1;
+      }
     }
 
     return ok({
       limit,
+      scanned: places.length,
+      queued: candidates.length,
       enriched,
-      skipped,
+      skipped: skipped + Math.max(0, places.length - candidates.length),
+      failed,
     });
   }
 }
