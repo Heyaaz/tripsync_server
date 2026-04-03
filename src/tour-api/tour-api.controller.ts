@@ -1,7 +1,8 @@
-import { Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
 import { User } from '@prisma/client';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SessionAuthGuard } from '../auth/session-auth.guard';
+import { EnrichPlacesDto } from './dto/enrich-places.dto';
 import { TourApiService } from './tour-api.service';
 
 @Controller('tour-api')
@@ -13,5 +14,12 @@ export class TourApiController {
   @HttpCode(HttpStatus.OK)
   syncChungnam(@CurrentUser() user: User) {
     return this.tourApiService.syncChungnamPlaces(user);
+  }
+
+  @Post('enrich/chungnam')
+  @UseGuards(SessionAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  enrichChungnam(@CurrentUser() user: User, @Body() dto: EnrichPlacesDto) {
+    return this.tourApiService.enrichChungnamPlaces(user, dto);
   }
 }

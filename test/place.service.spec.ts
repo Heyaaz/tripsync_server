@@ -44,4 +44,36 @@ describe('PlaceService', () => {
     expect(prisma.place.upsert).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ synced: 1, skipped: 1 });
   });
+
+  it('merges detailCommon/detailIntro into existing place', async () => {
+    prisma.place.findUnique = jest.fn().mockResolvedValue({
+      id: BigInt(1),
+      name: '기존명',
+      address: '기존주소',
+      latitude: 36.4,
+      longitude: 127.1,
+      imageUrl: null,
+      operatingHours: { status: 'unknown' },
+      admissionFee: null,
+      metadataTags: { contentTypeId: '14' },
+    });
+    prisma.place.update = jest.fn().mockResolvedValue({});
+
+    await service.enrichPlaceDetails(
+      BigInt(1),
+      { title: '가가책방', addr1: '충남 공주', firstimage: 'img.jpg', overview: '설명', tel: '010' },
+      { usetimeculture: '09:00~18:00', usefee: '5000원' },
+    );
+
+    expect(prisma.place.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: BigInt(1) },
+        data: expect.objectContaining({
+          name: '가가책방',
+          imageUrl: 'img.jpg',
+          admissionFee: expect.stringContaining('5000원'),
+        }),
+      }),
+    );
+  });
 });

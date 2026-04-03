@@ -2,6 +2,27 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
+
+export interface TourApiCommonDetailItem {
+  contentid?: string;
+  title?: string;
+  homepage?: string;
+  firstimage?: string;
+  firstimage2?: string;
+  addr1?: string;
+  addr2?: string;
+  tel?: string;
+  overview?: string;
+  mapx?: string;
+  mapy?: string;
+  modifiedtime?: string;
+}
+
+export interface TourApiIntroDetailItem extends Record<string, unknown> {
+  contentid?: string;
+  contenttypeid?: string;
+}
+
 export interface TourApiPlaceItem {
   contentid?: string;
   contenttypeid?: string;
@@ -195,6 +216,71 @@ export class PlaceService {
     }
 
     return { synced, skipped };
+  }
+
+
+  async listPlacesForEnrichment(limit: number) {
+    return this.prisma.place.findMany({
+      where: { delYn: 'N' },
+      orderBy: { id: 'asc' },
+      take: limit,
+    });
+  }
+
+  private extractOperatingHours(intro: TourApiIntroDetailItem) {
+    const hours = Object.fromEntries(
+      Object.entries(intro).filter(([key, value]) =>
+        value && ['usetime', 'restdate', 'checkintime', 'checkouttime'].some((prefix) => key.toLowerCase().includes(prefix)),
+      ),
+    );
+    return Object.keys(hours).length > 0 ? ({ status: 'partial', ...hours } as Prisma.InputJsonValue) : ({ status: 'unknown' } as Prisma.InputJsonValue);
+  }
+
+  private extractAdmissionFee(intro: TourApiIntroDetailItem) {
+    const values = Object.entries(intro)
+      .filter(([key, value]) => value && ['usefee', 'parkingfee'].some((prefix) => key.toLowerCase().includes(prefix)))
+      .map(([key, value]) => `${key}: ${String(value)}`);
+    return values.length > 0 ? values.join(' | ') : null;
+  }
+
+  async enrichPlaceDetails(
+    placeId: bigint,
+    common: TourApiCommonDetailItem | null,
+    intro: TourApiIntroDetailItem | null,
+  ) {
+    const current = await this.prisma.place.findUnique({ where: { id: placeId } });
+    if (!current) {
+      return null;
+    }
+
+    const currentMetadata = current.metadataTags && typeof current.metadataTags === 'object' && !Array.isArray(current.metadataTags)
+      ? (current.metadataTags as Record<string, unknown>)
+      : {};
+
+    const mergedMetadata = {
+      ...currentMetadata,
+      tel: common?.tel ?? currentMetadata.tel ?? null,
+      homepage: common?.homepage ?? currentMetadata.homepage ?? null,
+      overview: common?.overview ?? currentMetadata.overview ?? null,
+      detailEnrichedAt: new Date().toISOString(),
+      introFields: intro ?? currentMetadata.introFields ?? null,
+    } as Prisma.InputJsonValue;
+
+    return this.prisma.place.update({
+      where: { id: placeId },
+      data: {
+        name: common?.title?.trim() || current.name,
+        address: [common?.addr1, common?.addr2].filter(Boolean).join(' ').trim() || current.address,
+        latitude: common?.mapy ? Number(common.mapy) : current.latitude,
+        longitude: common?.mapx ? Number(common.mapx) : current.longitude,
+        imageUrl: common?.firstimage ?? current.imageUrl,
+        operatingHours: intro
+          ? this.extractOperatingHours(intro)
+          : ((current.operatingHours ?? { status: 'unknown' }) as Prisma.InputJsonValue),
+        admissionFee: intro ? this.extractAdmissionFee(intro) : current.admissionFee,
+        metadataTags: mergedMetadata,
+      },
+    });
   }
 
   async findCandidatePlaces() {

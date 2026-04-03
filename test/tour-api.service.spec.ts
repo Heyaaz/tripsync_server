@@ -6,6 +6,8 @@ describe('TourApiService', () => {
   };
   const placeService = {
     upsertTourApiPlaces: jest.fn(),
+    listPlacesForEnrichment: jest.fn(),
+    enrichPlaceDetails: jest.fn(),
   };
   const service = new TourApiService(authService as any, placeService as any);
 
@@ -38,6 +40,45 @@ describe('TourApiService', () => {
     expect(fetchMock).toHaveBeenCalledTimes(7);
     expect(placeService.upsertTourApiPlaces).toHaveBeenCalledTimes(7);
     expect(result.data?.contentTypeIds).toEqual([12, 14, 15, 28, 32, 38, 39]);
+
+    fetchMock.mockRestore();
+  });
+
+  it('enriches a limited batch of places with detailCommon/detailIntro', async () => {
+    placeService.listPlacesForEnrichment.mockResolvedValue([
+      {
+        id: BigInt(1),
+        tourApiId: '2750143',
+        metadataTags: { contentTypeId: '14' },
+      },
+    ]);
+
+    const fetchMock = jest
+      .spyOn(global, 'fetch' as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          response: {
+            header: { resultCode: '0000', resultMsg: 'OK' },
+            body: { items: { item: [{ contentid: '2750143', title: '가가책방', firstimage: 'img.jpg' }] } },
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          response: {
+            header: { resultCode: '0000', resultMsg: 'OK' },
+            body: { items: { item: [{ contentid: '2750143', contenttypeid: '14', usefee: '5000원' }] } },
+          },
+        }),
+      } as Response);
+
+    const result = await service.enrichChungnamPlaces({ isGuest: false } as any, { limit: 1 });
+
+    expect(placeService.listPlacesForEnrichment).toHaveBeenCalledWith(1);
+    expect(placeService.enrichPlaceDetails).toHaveBeenCalledTimes(1);
+    expect(result.data).toEqual({ limit: 1, enriched: 1, skipped: 0 });
 
     fetchMock.mockRestore();
   });
