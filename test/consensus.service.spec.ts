@@ -131,4 +131,212 @@ describe('ConsensusService', () => {
     const discovery = options.find((option) => option.optionType === ScheduleOptionType.DISCOVERY);
     expect(discovery?.slots.some((slot) => slot.isHiddenGem)).toBe(true);
   });
+
+  it('prioritizes restaurants for meal slots and avoids accommodations before the final slot', () => {
+    const curatedPlaces: PlaceCandidate[] = [
+      {
+        id: 201,
+        name: '호수공원 산책로',
+        address: '충남 예산',
+        category: 'tourist_attraction',
+        mobilityScore: 58,
+        photoScore: 62,
+        budgetScore: 42,
+        themeScore: 50,
+        operatingHours: { status: 'known' },
+        metadataTags: { contentTypeId: '12' },
+      },
+      {
+        id: 202,
+        name: '현대 아울렛',
+        address: '충남 천안',
+        category: 'shopping',
+        mobilityScore: 55,
+        photoScore: 60,
+        budgetScore: 72,
+        themeScore: 72,
+        operatingHours: { status: 'known' },
+        metadataTags: { contentTypeId: '38' },
+      },
+      {
+        id: 203,
+        name: '향토식당',
+        address: '충남 공주',
+        category: 'restaurant',
+        mobilityScore: 46,
+        photoScore: 52,
+        budgetScore: 48,
+        themeScore: 55,
+        operatingHours: { status: 'known' },
+        metadataTags: { contentTypeId: '39' },
+      },
+      {
+        id: 204,
+        name: '뷰맛집 카페',
+        address: '충남 태안',
+        category: 'restaurant',
+        mobilityScore: 44,
+        photoScore: 72,
+        budgetScore: 52,
+        themeScore: 58,
+        operatingHours: { status: 'known' },
+        metadataTags: { contentTypeId: '39' },
+      },
+      {
+        id: 205,
+        name: '오션 리조트',
+        address: '충남 보령',
+        category: 'accommodation',
+        mobilityScore: 50,
+        photoScore: 50,
+        budgetScore: 50,
+        themeScore: 50,
+        operatingHours: { status: 'known' },
+        metadataTags: { contentTypeId: '32' },
+      },
+      {
+        id: 206,
+        name: '문화예술관',
+        address: '충남 천안',
+        category: 'cultural_facility',
+        mobilityScore: 42,
+        photoScore: 58,
+        budgetScore: 46,
+        themeScore: 63,
+        operatingHours: { status: 'known' },
+        metadataTags: { contentTypeId: '14' },
+      },
+      {
+        id: 207,
+        name: '레포츠 파크',
+        address: '충남 서산',
+        category: 'leisure_sports',
+        mobilityScore: 78,
+        photoScore: 49,
+        budgetScore: 55,
+        themeScore: 45,
+        operatingHours: { status: 'known' },
+        metadataTags: { contentTypeId: '28' },
+      },
+    ];
+
+    const options = service.buildScheduleOptions({
+      roomId: 1,
+      destination: '충남',
+      tripDate: '2026-05-02',
+      startTime: '09:00',
+      endTime: '21:00',
+      members,
+      places: curatedPlaces,
+    });
+
+    const balanced = options.find((option) => option.optionType === ScheduleOptionType.BALANCED)!;
+    const lunchSlot = balanced.slots.find((slot) => slot.orderIndex === 2)!;
+    const finalSlot = balanced.slots.find((slot) => slot.orderIndex === balanced.slots.length)!;
+
+    expect(curatedPlaces.find((place) => place.id === lunchSlot.placeId)?.category).toBe('restaurant');
+    expect(
+      balanced.slots
+        .filter((slot) => slot.orderIndex < balanced.slots.length)
+        .some((slot) => curatedPlaces.find((place) => place.id === slot.placeId)?.category === 'accommodation'),
+    ).toBe(false);
+    expect(['restaurant', 'shopping']).toContain(curatedPlaces.find((place) => place.id === finalSlot.placeId)?.category);
+  });
+
+  it('filters out date-mismatched festivals when generating schedules', () => {
+    const datedPlaces: PlaceCandidate[] = [
+      {
+        id: 301,
+        name: '벚꽃 축제',
+        address: '충남 공주',
+        category: 'festival',
+        mobilityScore: 58,
+        photoScore: 78,
+        budgetScore: 55,
+        themeScore: 68,
+        operatingHours: { status: 'known' },
+        metadataTags: {
+          contentTypeId: '15',
+          introFields: { eventstartdate: '20260501', eventenddate: '20260510' },
+        },
+      },
+      {
+        id: 302,
+        name: '지난 축제',
+        address: '충남 공주',
+        category: 'festival',
+        mobilityScore: 58,
+        photoScore: 78,
+        budgetScore: 55,
+        themeScore: 68,
+        operatingHours: { status: 'known' },
+        metadataTags: {
+          contentTypeId: '15',
+          introFields: { eventstartdate: '20260401', eventenddate: '20260402' },
+        },
+      },
+      {
+        id: 303,
+        name: '향토식당',
+        address: '충남 공주',
+        category: 'restaurant',
+        mobilityScore: 46,
+        photoScore: 50,
+        budgetScore: 48,
+        themeScore: 53,
+        operatingHours: { status: 'known' },
+        metadataTags: { contentTypeId: '39' },
+      },
+      {
+        id: 304,
+        name: '역사 유적지',
+        address: '충남 공주',
+        category: 'tourist_attraction',
+        mobilityScore: 60,
+        photoScore: 61,
+        budgetScore: 42,
+        themeScore: 55,
+        operatingHours: { status: 'known' },
+        metadataTags: { contentTypeId: '12' },
+      },
+      {
+        id: 305,
+        name: '중앙 시장',
+        address: '충남 공주',
+        category: 'shopping',
+        mobilityScore: 55,
+        photoScore: 57,
+        budgetScore: 70,
+        themeScore: 74,
+        operatingHours: { status: 'known' },
+        metadataTags: { contentTypeId: '38' },
+      },
+      {
+        id: 306,
+        name: '민속 박물관',
+        address: '충남 공주',
+        category: 'cultural_facility',
+        mobilityScore: 43,
+        photoScore: 55,
+        budgetScore: 40,
+        themeScore: 62,
+        operatingHours: { status: 'known' },
+        metadataTags: { contentTypeId: '14' },
+      },
+    ];
+
+    const options = service.buildScheduleOptions({
+      roomId: 1,
+      destination: '충남',
+      tripDate: '2026-05-02',
+      startTime: '09:00',
+      endTime: '21:00',
+      members,
+      places: datedPlaces,
+    });
+
+    for (const option of options) {
+      expect(option.slots.some((slot) => slot.placeId === 302)).toBe(false);
+    }
+  });
 });

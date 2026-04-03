@@ -98,6 +98,13 @@ interface TargetVector {
   endTime: Date;
 }
 
+interface SlotSelectionProfile {
+  isMealSlot: boolean;
+  isFinalSlot: boolean;
+  isEarlySlot: boolean;
+  isLateSlot: boolean;
+}
+
 interface OptionContext {
   roomId: number;
   destination: string;
@@ -179,6 +186,7 @@ export class ConsensusService {
       60,
       false,
       context.members,
+      context.tripDate,
     );
 
     const balanced = this.materializeOption(
@@ -198,6 +206,7 @@ export class ConsensusService {
       65,
       false,
       context.members,
+      context.tripDate,
     );
 
     const discovery = this.materializeOption(
@@ -209,6 +218,7 @@ export class ConsensusService {
       55,
       true,
       context.members,
+      context.tripDate,
     );
 
     return [balanced, individual, discovery];
@@ -413,10 +423,12 @@ export class ConsensusService {
     threshold: number,
     preferHiddenGem: boolean,
     members: MemberSnapshot[],
+    tripDate: string,
   ): ScheduleOptionDraft {
     const chosenPlaces: PlaceCandidate[] = [];
     const forcedHiddenGemIndex = preferHiddenGem ? this.pickForcedHiddenGemSlot(targets) : -1;
     const slots = targets.map((target, index) => {
+      const profile = this.buildSlotSelectionProfile(target.startTime, target.endTime, index + 1, targets.length);
       const place = this.selectBestPlace({
         targetVector: target.scores,
         places,
@@ -424,6 +436,8 @@ export class ConsensusService {
         previousPlace: chosenPlaces.at(-1),
         preferHiddenGem,
         mustBeHiddenGem: index === forcedHiddenGemIndex,
+        tripDate,
+        profile,
       });
 
       chosenPlaces.push(place);
@@ -508,15 +522,36 @@ export class ConsensusService {
     previousPlace?: PlaceCandidate;
     preferHiddenGem: boolean;
     mustBeHiddenGem: boolean;
+    tripDate: string;
+    profile: SlotSelectionProfile;
   }) {
     const source = input.mustBeHiddenGem
       ? input.places.filter((place) => this.isHiddenGem(place))
       : input.places;
-    const pool = source.length > 0 ? source : input.places;
+    let pool = source.length > 0 ? source : input.places;
+
+    const validFestivalPool = pool.filter((place) => !this.isFestivalPlace(place) || this.isFestivalAvailableOnTripDate(place, input.tripDate) !== false);
+    if (validFestivalPool.length > 0) {
+      pool = validFestivalPool;
+    }
+
+    if (!input.profile.isFinalSlot) {
+      const withoutAccommodation = pool.filter((place) => !this.isAccommodationPlace(place));
+      if (withoutAccommodation.length > 0) {
+        pool = withoutAccommodation;
+      }
+    }
+
+    if (input.profile.isMealSlot) {
+      const restaurants = pool.filter((place) => this.isRestaurantPlace(place));
+      if (restaurants.length > 0) {
+        pool = restaurants;
+      }
+    }
 
     const ranked = [...pool].sort((a, b) => {
-      return this.placeRankingScore(b, input.targetVector, input.previousPlace, input.preferHiddenGem, input.usedPlaceIds) -
-        this.placeRankingScore(a, input.targetVector, input.previousPlace, input.preferHiddenGem, input.usedPlaceIds);
+      return this.placeRankingScore(b, input.targetVector, input.previousPlace, input.preferHiddenGem, input.usedPlaceIds, input.tripDate, input.profile) -
+        this.placeRankingScore(a, input.targetVector, input.previousPlace, input.preferHiddenGem, input.usedPlaceIds, input.tripDate, input.profile);
     });
 
     const candidate = ranked[0];
@@ -533,6 +568,8 @@ export class ConsensusService {
     previousPlace: PlaceCandidate | undefined,
     preferHiddenGem: boolean,
     usedPlaceIds: Set<number>,
+    tripDate: string,
+    profile: SlotSelectionProfile,
   ) {
     let score = this.calculateVectorMatch(targetVector, this.placeScores(place));
     if (usedPlaceIds.has(place.id)) {
@@ -547,7 +584,49 @@ export class ConsensusService {
     if (preferHiddenGem && this.isHiddenGem(place)) {
       score += 0.2;
     }
+    score += this.placeCategoryModifier(place, tripDate, profile);
     return score;
+  }
+
+  private placeCategoryModifier(place: PlaceCandidate, tripDate: string, profile: SlotSelectionProfile) {
+    let modifier = 0;
+
+    if (this.isRestaurantPlace(place)) {
+      if (profile.isMealSlot) {
+        modifier += 0.35;
+      } else {
+        modifier -= 0.12;
+      }
+    }
+
+    if (this.isShoppingPlace(place)) {
+      if (profile.isLateSlot) {
+        modifier += 0.18;
+      } else if (profile.isEarlySlot) {
+        modifier -= 0.12;
+      } else {
+        modifier -= 0.03;
+      }
+    }
+
+    if (this.isAccommodationPlace(place)) {
+      modifier += profile.isFinalSlot ? -0.08 : -0.45;
+    }
+
+    const festivalAvailability = this.isFestivalAvailableOnTripDate(place, tripDate);
+    if (festivalAvailability === true) {
+      modifier += profile.isLateSlot ? 0.18 : 0.1;
+    } else if (festivalAvailability === false) {
+      modifier -= 0.5;
+    } else if (this.isFestivalPlace(place)) {
+      modifier -= 0.05;
+    }
+
+    if (!profile.isMealSlot && !profile.isLateSlot && this.isDayActivityPlace(place)) {
+      modifier += 0.08;
+    }
+
+    return modifier;
   }
 
   private calculateVectorMatch(target: AxisScores, candidate: AxisScores) {
@@ -576,6 +655,87 @@ export class ConsensusService {
       return map.hiddenGem === true || map.populationDeclineArea === true || map.regionType === 'population_decline';
     }
     return false;
+  }
+
+  private buildSlotSelectionProfile(startTime: Date, endTime: Date, orderIndex: number, totalSlots: number): SlotSelectionProfile {
+    const startMinutes = this.getSeoulMinutes(startTime);
+    const endMinutes = this.getSeoulMinutes(endTime);
+    const overlapsLunch = startMinutes < 13 * 60 + 30 && endMinutes > 11 * 60 + 30;
+    const overlapsDinner = startMinutes < 20 * 60 && endMinutes > 17 * 60;
+
+    return {
+      isMealSlot: overlapsLunch || overlapsDinner,
+      isFinalSlot: orderIndex === totalSlots,
+      isEarlySlot: orderIndex === 1 || startMinutes < 11 * 60,
+      isLateSlot: startMinutes >= 16 * 60 || endMinutes > 18 * 60,
+    };
+  }
+
+  private getSeoulMinutes(date: Date) {
+    return ((date.getUTCHours() + 9) % 24) * 60 + date.getUTCMinutes();
+  }
+
+  private readMetadataObject(place: PlaceCandidate) {
+    if (!place.metadataTags || typeof place.metadataTags !== 'object' || Array.isArray(place.metadataTags)) {
+      return null;
+    }
+    return place.metadataTags as Record<string, unknown>;
+  }
+
+  private getPlaceContentTypeId(place: PlaceCandidate) {
+    const metadata = this.readMetadataObject(place);
+    const value = metadata?.contentTypeId;
+    return typeof value === 'string' ? value : null;
+  }
+
+  private isRestaurantPlace(place: PlaceCandidate) {
+    return place.category === 'restaurant' || this.getPlaceContentTypeId(place) === '39';
+  }
+
+  private isShoppingPlace(place: PlaceCandidate) {
+    return place.category === 'shopping' || this.getPlaceContentTypeId(place) === '38';
+  }
+
+  private isAccommodationPlace(place: PlaceCandidate) {
+    return place.category === 'accommodation' || this.getPlaceContentTypeId(place) === '32';
+  }
+
+  private isFestivalPlace(place: PlaceCandidate) {
+    return place.category === 'festival' || this.getPlaceContentTypeId(place) === '15';
+  }
+
+  private isDayActivityPlace(place: PlaceCandidate) {
+    return ['tourist_attraction', 'cultural_facility', 'leisure_sports', 'festival'].includes(place.category);
+  }
+
+  private isFestivalAvailableOnTripDate(place: PlaceCandidate, tripDate: string): boolean | null {
+    if (!this.isFestivalPlace(place)) {
+      return null;
+    }
+
+    const metadata = this.readMetadataObject(place);
+    const introFields =
+      metadata?.introFields && typeof metadata.introFields === 'object' && !Array.isArray(metadata.introFields)
+        ? (metadata.introFields as Record<string, unknown>)
+        : null;
+
+    const start = this.parseYmdDate(introFields?.eventstartdate ?? introFields?.eventStartDate ?? metadata?.eventstartdate ?? metadata?.eventStartDate);
+    const end = this.parseYmdDate(introFields?.eventenddate ?? introFields?.eventEndDate ?? metadata?.eventenddate ?? metadata?.eventEndDate);
+
+    if (!start || !end) {
+      return null;
+    }
+
+    const normalizedTripDate = tripDate.replaceAll('-', '');
+    return normalizedTripDate >= start && normalizedTripDate <= end;
+  }
+
+  private parseYmdDate(value: unknown) {
+    if (value == null) {
+      return null;
+    }
+    const digits = String(value).replace(/\D/g, '');
+    return digits.length >= 8 ? digits.slice(0, 8) : null;
   }
 
   private placeScores(place: PlaceCandidate): AxisScores {
