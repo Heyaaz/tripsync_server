@@ -1,137 +1,274 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { AuthService } from '../auth/auth.service';
 import { ok } from '../common/dto/api-response.dto';
-import { ACTIVE_DEL_YN } from '../common/soft-delete/soft-delete.util';
+import { DomainException } from '../common/errors/domain.exception';
 import { BaseSoftDeleteService } from '../common/soft-delete/base-soft-delete.service';
-import { ConsensusService } from '../consensus/consensus.service';
+import { ACTIVE_DEL_YN } from '../common/soft-delete/soft-delete.util';
+import {
+  AxisScores,
+  ConsensusService,
+  MemberSnapshot,
+  PlaceCandidate,
+  ScheduleOptionDraft,
+} from '../consensus/consensus.service';
+import { ScheduleOptionType, TripRoomStatus } from '../common/enums/domain.enums';
 import { PrismaService } from '../prisma/prisma.service';
+import { ConfirmScheduleDto } from './dto/confirm-schedule.dto';
 import { GenerateScheduleDto } from './dto/generate-schedule.dto';
 import { RegenerateScheduleDto } from './dto/regenerate-schedule.dto';
-import { SlotType } from '../common/enums/domain.enums';
 
 @Injectable()
 export class ScheduleService extends BaseSoftDeleteService {
   constructor(
+    private readonly authService: AuthService,
     private readonly consensusService: ConsensusService,
     private readonly prisma: PrismaService,
   ) {
     super();
   }
 
-  private async getActiveRoom(roomId: number) {
+  private async getRoomWithMembers(roomId: number) {
     const room = await this.prisma.tripRoom.findFirst({
       where: this.activeWhere({ id: BigInt(roomId) }),
       include: {
+        members: {
+          where: this.activeWhere({}),
+          include: { user: true },
+          orderBy: { joinedAt: 'asc' },
+        },
         memberProfiles: {
           where: this.activeWhere({}),
+          include: { user: true },
+          orderBy: { createdAt: 'asc' },
         },
       },
     });
 
     if (!room) {
-      throw new NotFoundException('일정을 생성할 여행 방을 찾을 수 없습니다.');
+      throw new DomainException(HttpStatus.NOT_FOUND, 'ROOM_NOT_FOUND', '존재하지 않는 여행 방입니다.');
     }
 
     return room;
   }
 
-  async generateSchedule(roomId: number, dto: GenerateScheduleDto) {
-    const room = await this.getActiveRoom(roomId);
-    const latestVersion = await this.prisma.schedule.findFirst({
-      where: this.activeWhere({ roomId: room.id }),
-      orderBy: { version: 'desc' },
+  private async ensureRoomMember(roomId: bigint, userId: bigint) {
+    const membership = await this.prisma.roomMember.findFirst({
+      where: this.activeWhere({ roomId, userId }),
     });
 
-    const version = (latestVersion?.version ?? 0) + 1;
-    const groupSatisfaction = Math.max(65, 80 - room.memberProfiles.length * 2);
+    if (!membership) {
+      throw new DomainException(HttpStatus.FORBIDDEN, 'FORBIDDEN', '방 멤버만 접근할 수 있습니다.');
+    }
+  }
 
-    const schedule = await this.prisma.schedule.create({
-      data: {
-        roomId: room.id,
-        version,
-        generationInput: {
-          destination: dto.destination,
-          tripDate: dto.tripDate,
-          startTime: dto.startTime,
-          endTime: dto.endTime,
-        },
-        groupSatisfaction,
-        llmProvider: 'local-placeholder',
-        delYn: ACTIVE_DEL_YN,
+  private mapMembers(room: Awaited<ReturnType<ScheduleService['getRoomWithMembers']>>): MemberSnapshot[] {
+    return room.memberProfiles.map((profile, index) => ({
+      userId: Number(profile.userId),
+      nickname: profile.user.nickname,
+      joinedOrder: index,
+      scores: {
+        mobility: profile.mobilityScore,
+        photo: profile.photoScore,
+        budget: profile.budgetScore,
+        theme: profile.themeScore,
       },
+    }));
+  }
+
+  private mapPlaces(places: Array<{
+    id: bigint;
+    name: string;
+    address: string;
+    category: string;
+    mobilityScore: number;
+    photoScore: number;
+    budgetScore: number;
+    themeScore: number;
+    metadataTags: Prisma.JsonValue | null;
+    operatingHours: Prisma.JsonValue | null;
+  }>): PlaceCandidate[] {
+    return places.map((place) => ({
+      id: Number(place.id),
+      name: place.name,
+      address: place.address,
+      category: place.category,
+      mobilityScore: place.mobilityScore,
+      photoScore: place.photoScore,
+      budgetScore: place.budgetScore,
+      themeScore: place.themeScore,
+      metadataTags: place.metadataTags ?? undefined,
+      operatingHours: place.operatingHours ?? undefined,
+    }));
+  }
+
+  private async createScheduleVersion(
+    roomId: bigint,
+    version: number,
+    input: GenerateScheduleDto,
+    options: ScheduleOptionDraft[],
+  ) {
+    const created = await this.prisma.$transaction(async (tx) => {
+      const output: Array<{ scheduleId: number; option: ScheduleOptionDraft }> = [];
+
+      for (const option of options) {
+        const schedule = await tx.schedule.create({
+          data: {
+            roomId,
+            version,
+            optionType: option.optionType as any,
+            isConfirmed: false,
+            generationInput: {
+              destination: input.destination,
+              tripDate: input.tripDate,
+              startTime: input.startTime,
+              endTime: input.endTime,
+            } as Prisma.InputJsonValue,
+            summary: option.summary,
+            groupSatisfaction: option.groupSatisfaction,
+            llmProvider: 'deterministic-consensus',
+            delYn: ACTIVE_DEL_YN,
+          },
+        });
+
+        if (option.slots.length > 0) {
+          await tx.scheduleSlot.createMany({
+            data: option.slots.map((slot) => ({
+              scheduleId: schedule.id,
+              startTime: slot.startTime,
+              endTime: slot.endTime,
+              placeId: BigInt(slot.placeId),
+              slotType: slot.slotType as any,
+              targetUserId: slot.targetUserId != null ? BigInt(slot.targetUserId) : null,
+              reasonAxis: slot.reasonAxis,
+              reasonText: slot.reasonText,
+              orderIndex: slot.orderIndex,
+              delYn: ACTIVE_DEL_YN,
+            })),
+          });
+        }
+
+        if (option.satisfactionByUser.length > 0) {
+          await tx.satisfactionScore.createMany({
+            data: option.satisfactionByUser.map((entry) => ({
+              scheduleId: schedule.id,
+              userId: BigInt(entry.userId),
+              score: entry.score,
+              breakdown: entry.breakdown as Prisma.InputJsonValue,
+              delYn: ACTIVE_DEL_YN,
+            })),
+          });
+        }
+
+        output.push({
+          scheduleId: Number(schedule.id),
+          option,
+        });
+      }
+
+      return output;
     });
 
-    const place = await this.prisma.place.findFirst({
+    return created;
+  }
+
+  async generateSchedule(roomId: number, dto: GenerateScheduleDto, authorization?: string, cookieHeader?: string) {
+    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+    this.authService.assertHostUser(user);
+    const room = await this.getRoomWithMembers(roomId);
+
+    if (room.hostUserId !== user.id) {
+      throw new DomainException(HttpStatus.FORBIDDEN, 'FORBIDDEN', '방장만 일정을 생성할 수 있습니다.');
+    }
+    if (room.status === TripRoomStatus.WAITING || room.memberProfiles.length < 2) {
+      throw new DomainException(HttpStatus.UNPROCESSABLE_ENTITY, 'ROOM_NOT_READY', '일정 생성 가능한 상태가 아닙니다.');
+    }
+
+    const places = await this.prisma.place.findMany({
       where: this.activeWhere({}),
       orderBy: { id: 'asc' },
     });
 
-    if (place) {
-      await this.prisma.scheduleSlot.create({
-        data: {
-          scheduleId: schedule.id,
-          startTime: new Date(`${dto.tripDate}T09:00:00+09:00`),
-          endTime: new Date(`${dto.tripDate}T11:00:00+09:00`),
-          placeId: place.id,
-          slotType: SlotType.COMMON,
-          targetUserId: null,
-          reasonAxis: 'common',
-          orderIndex: 1,
-          delYn: ACTIVE_DEL_YN,
-        },
-      });
-    }
-
-    await this.prisma.tripRoom.update({
-      where: { id: room.id },
-      data: { status: 'completed' },
-    });
-
-    return ok({
-      ...this.consensusService.buildScheduleDraft(roomId),
-      scheduleId: Number(schedule.id),
-      version: schedule.version,
-      groupSatisfaction: schedule.groupSatisfaction,
+    const options = this.consensusService.buildScheduleOptions({
+      roomId,
       destination: dto.destination,
       tripDate: dto.tripDate,
       startTime: dto.startTime,
       endTime: dto.endTime,
+      members: this.mapMembers(room),
+      places: this.mapPlaces(places),
+    });
+
+    const latest = await this.prisma.schedule.findFirst({
+      where: this.activeWhere({ roomId: room.id }),
+      orderBy: { version: 'desc' },
+    });
+    const version = (latest?.version ?? 0) + 1;
+
+    const created = await this.createScheduleVersion(room.id, version, dto, options);
+
+    await this.prisma.tripRoom.update({
+      where: { id: room.id },
+      data: { status: TripRoomStatus.COMPLETED as any },
+    });
+
+    return ok({
+      roomId,
+      version,
+      options: created.map((entry) => ({
+        scheduleId: entry.scheduleId,
+        optionType: entry.option.optionType,
+        label: entry.option.label,
+        summary: entry.option.summary,
+        groupSatisfaction: entry.option.groupSatisfaction,
+        satisfactionByUser: entry.option.satisfactionByUser.map((score) => ({
+          userId: score.userId,
+          score: score.score,
+        })),
+      })),
     });
   }
 
-  async getSchedule(scheduleId: number) {
+  async getSchedule(scheduleId: number, authorization?: string, cookieHeader?: string) {
+    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
     const schedule = await this.prisma.schedule.findFirst({
       where: this.activeWhere({ id: BigInt(scheduleId) }),
       include: {
+        room: true,
         slots: {
           where: this.activeWhere({}),
-          include: {
-            place: true,
-          },
+          include: { place: true },
           orderBy: { orderIndex: 'asc' },
         },
         satisfactionScores: {
           where: this.activeWhere({}),
+          orderBy: { userId: 'asc' },
         },
       },
     });
 
     if (!schedule) {
-      throw new NotFoundException('일정을 찾을 수 없습니다.');
+      throw new DomainException(HttpStatus.NOT_FOUND, 'ROOM_NOT_FOUND', '일정을 찾을 수 없습니다.');
     }
+
+    await this.ensureRoomMember(schedule.roomId, user.id);
 
     return ok({
       id: Number(schedule.id),
       roomId: Number(schedule.roomId),
       version: schedule.version,
+      optionType: schedule.optionType,
+      isConfirmed: schedule.isConfirmed,
       groupSatisfaction: schedule.groupSatisfaction,
-      summary: '오전 활동, 오후 휴식 중심의 균형 일정',
+      summary: schedule.summary,
       slots: schedule.slots.map((slot) => ({
         orderIndex: slot.orderIndex,
         startTime: slot.startTime.toISOString(),
         endTime: slot.endTime.toISOString(),
         slotType: slot.slotType,
-        targetUserId: slot.targetUserId ? Number(slot.targetUserId) : null,
+        targetUserId: slot.targetUserId != null ? Number(slot.targetUserId) : null,
         reasonAxis: slot.reasonAxis,
+        reasonText: slot.reasonText,
         place: {
           id: Number(slot.placeId),
           name: slot.place.name,
@@ -145,24 +282,75 @@ export class ScheduleService extends BaseSoftDeleteService {
     });
   }
 
-  async regenerateSchedule(scheduleId: number, dto: RegenerateScheduleDto) {
+  async confirmSchedule(roomId: number, dto: ConfirmScheduleDto, authorization?: string, cookieHeader?: string) {
+    const user = await this.authService.requireSessionUser(authorization, cookieHeader);
+    this.authService.assertHostUser(user);
+    const room = await this.getRoomWithMembers(roomId);
+
+    if (room.hostUserId !== user.id) {
+      throw new DomainException(HttpStatus.FORBIDDEN, 'FORBIDDEN', '방장만 일정을 확정할 수 있습니다.');
+    }
+
+    const latest = await this.prisma.schedule.findFirst({
+      where: this.activeWhere({ roomId: room.id }),
+      orderBy: { version: 'desc' },
+    });
+
+    if (!latest) {
+      throw new DomainException(HttpStatus.UNPROCESSABLE_ENTITY, 'ROOM_NOT_READY', '확정할 일정 옵션이 없습니다.');
+    }
+
+    const target = await this.prisma.schedule.findFirst({
+      where: this.activeWhere({ roomId: room.id, version: latest.version, optionType: dto.optionType as any }),
+    });
+
+    if (!target) {
+      throw new DomainException(HttpStatus.NOT_FOUND, 'SCHEDULE_GENERATION_FAILED', '선택한 일정 옵션을 찾을 수 없습니다.');
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.schedule.updateMany({
+        where: this.activeWhere({ roomId: room.id }),
+        data: { isConfirmed: false },
+      }),
+      this.prisma.schedule.update({
+        where: { id: target.id },
+        data: { isConfirmed: true },
+      }),
+    ]);
+
+    return ok({
+      scheduleId: Number(target.id),
+      roomId,
+      optionType: dto.optionType,
+      status: 'confirmed',
+    });
+  }
+
+  async regenerateSchedule(scheduleId: number, dto: RegenerateScheduleDto, authorization?: string, cookieHeader?: string) {
     const existing = await this.prisma.schedule.findFirst({
       where: this.activeWhere({ id: BigInt(scheduleId) }),
+      include: { room: true },
     });
 
     if (!existing) {
-      throw new NotFoundException('재생성할 일정이 없습니다.');
+      throw new DomainException(HttpStatus.NOT_FOUND, 'ROOM_NOT_FOUND', '재생성할 일정을 찾을 수 없습니다.');
     }
 
-    const regenerated = await this.generateSchedule(Number(existing.roomId), {
-      destination: '서울',
-      tripDate: dto.tripDate,
-      startTime: dto.startTime,
-      endTime: dto.endTime,
-    });
+    const regenerated = await this.generateSchedule(
+      Number(existing.roomId),
+      {
+        destination: existing.room.destination,
+        tripDate: dto.tripDate,
+        startTime: dto.startTime,
+        endTime: dto.endTime,
+      },
+      authorization,
+      cookieHeader,
+    );
 
     return ok({
-      scheduleId: existing.id.toString(),
+      scheduleId,
       reason: dto.reason,
       tripDate: dto.tripDate,
       startTime: dto.startTime,
@@ -185,14 +373,13 @@ export class ScheduleService extends BaseSoftDeleteService {
     });
 
     if (!schedule) {
-      throw new NotFoundException('공유할 일정을 찾을 수 없습니다.');
+      throw new DomainException(HttpStatus.NOT_FOUND, 'ROOM_NOT_FOUND', '공유할 일정을 찾을 수 없습니다.');
     }
 
     return ok({
       scheduleId,
-      destination: '서울',
-      tripDate: new Date(schedule.createdAt).toISOString().slice(0, 10),
-      summary: '오전 활동, 오후 휴식 중심의 균형 일정',
+      optionType: schedule.optionType,
+      summary: schedule.summary,
       groupSatisfaction: schedule.groupSatisfaction,
       slots: schedule.slots.map((slot) => ({
         orderIndex: slot.orderIndex,

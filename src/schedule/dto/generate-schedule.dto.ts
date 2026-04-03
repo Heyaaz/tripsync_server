@@ -2,7 +2,7 @@ import { IsDateString, IsString, Matches } from 'class-validator';
 
 export class GenerateScheduleDto {
   @IsString()
-  @Matches(/^서울$/)
+  @Matches(/^충남$/)
   destination!: string;
 
   @IsDateString()
