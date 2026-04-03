@@ -72,6 +72,42 @@ describe('PlaceService', () => {
           name: '가가책방',
           imageUrl: 'img.jpg',
           admissionFee: expect.stringContaining('5000원'),
+          operatingHours: expect.objectContaining({
+            status: 'known',
+            entries: expect.arrayContaining([
+              expect.objectContaining({
+                openMinutes: 540,
+                closeMinutes: 1080,
+              }),
+            ]),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('stores always-open status when intro indicates all-day operation', async () => {
+    prisma.place.findUnique = jest.fn().mockResolvedValue({
+      id: BigInt(2),
+      name: '기존명',
+      address: '기존주소',
+      latitude: 36.4,
+      longitude: 127.1,
+      imageUrl: null,
+      operatingHours: { status: 'unknown' },
+      admissionFee: null,
+      metadataTags: { contentTypeId: '39' },
+    });
+    prisma.place.update = jest.fn().mockResolvedValue({});
+
+    await service.enrichPlaceDetails(BigInt(2), null, { usetimefood: '24시간 영업 / 연중무휴' });
+
+    expect(prisma.place.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          operatingHours: expect.objectContaining({
+            status: 'always',
+          }),
         }),
       }),
     );

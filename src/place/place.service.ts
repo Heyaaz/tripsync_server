@@ -52,6 +52,14 @@ const CONTENT_TYPE_CATEGORY: Record<string, string> = {
   '39': 'restaurant',
 };
 
+interface ParsedOperatingRange {
+  openMinutes: number;
+  closeMinutes: number;
+  closesNextDay: boolean;
+  raw: string;
+  sourceKey: string;
+}
+
 @Injectable()
 export class PlaceService {
   constructor(private readonly prisma: PrismaService) {}
@@ -227,13 +235,121 @@ export class PlaceService {
     });
   }
 
+  private toMinutes(hours: number, minutes: number) {
+    return hours * 60 + minutes;
+  }
+
+  private parseTimeToken(token: string) {
+    const normalized = token.trim().replace(/\s+/g, '');
+    const colonMatch = normalized.match(/^(\d{1,2}):(\d{2})$/);
+    if (colonMatch) {
+      return {
+        hours: Number(colonMatch[1]),
+        minutes: Number(colonMatch[2]),
+      };
+    }
+
+    const koreanMatch = normalized.match(/^(\d{1,2})시(?:(\d{1,2})분?)?$/);
+    if (koreanMatch) {
+      return {
+        hours: Number(koreanMatch[1]),
+        minutes: Number(koreanMatch[2] ?? 0),
+      };
+    }
+
+    const compactMatch = normalized.match(/^(\d{2})(\d{2})$/);
+    if (compactMatch) {
+      return {
+        hours: Number(compactMatch[1]),
+        minutes: Number(compactMatch[2]),
+      };
+    }
+
+    return null;
+  }
+
+  private parseOperatingRanges(raw: string, sourceKey: string): ParsedOperatingRange[] {
+    const normalized = raw
+      .replace(/[∼〜—–]/g, '~')
+      .replace(/부터/g, '~')
+      .replace(/까지/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!normalized) {
+      return [];
+    }
+
+    const segments = normalized
+      .split(/[,\n/]| 및 /)
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    const ranges: ParsedOperatingRange[] = [];
+
+    for (const segment of segments) {
+      const match = segment.match(/(\d{1,2}(?::\d{2})?|\d{1,2}시(?:\d{1,2}분?)?|\d{4})\s*~\s*(\d{1,2}(?::\d{2})?|\d{1,2}시(?:\d{1,2}분?)?|\d{4})/);
+      if (!match) {
+        continue;
+      }
+
+      const open = this.parseTimeToken(match[1]);
+      const close = this.parseTimeToken(match[2]);
+      if (!open || !close) {
+        continue;
+      }
+
+      let openMinutes = this.toMinutes(open.hours, open.minutes);
+      let closeMinutes = this.toMinutes(close.hours, close.minutes);
+      let closesNextDay = false;
+
+      if (closeMinutes <= openMinutes) {
+        closeMinutes += 24 * 60;
+        closesNextDay = true;
+      }
+
+      ranges.push({
+        openMinutes,
+        closeMinutes,
+        closesNextDay,
+        raw: segment,
+        sourceKey,
+      });
+    }
+
+    return ranges;
+  }
+
   private extractOperatingHours(intro: TourApiIntroDetailItem) {
-    const hours = Object.fromEntries(
-      Object.entries(intro).filter(([key, value]) =>
-        value && ['usetime', 'restdate', 'checkintime', 'checkouttime'].some((prefix) => key.toLowerCase().includes(prefix)),
-      ),
+    const hourFields = Object.entries(intro).filter(([key, value]) =>
+      value && ['usetime', 'restdate', 'checkintime', 'checkouttime'].some((prefix) => key.toLowerCase().includes(prefix)),
     );
-    return Object.keys(hours).length > 0 ? ({ status: 'partial', ...hours } as Prisma.InputJsonValue) : ({ status: 'unknown' } as Prisma.InputJsonValue);
+
+    if (hourFields.length === 0) {
+      return { status: 'unknown' } as Prisma.InputJsonValue;
+    }
+
+    const rawFields = Object.fromEntries(hourFields.map(([key, value]) => [key, String(value)]));
+    const joinedValues = Object.values(rawFields).join(' ');
+    if (/(24시간|상시|연중무휴|항시)/.test(joinedValues)) {
+      return {
+        status: 'always',
+        rawFields,
+      } as Prisma.InputJsonValue;
+    }
+
+    const parsedRanges = hourFields.flatMap(([key, value]) => this.parseOperatingRanges(String(value), key));
+
+    return parsedRanges.length > 0
+      ? ({
+          status: 'known',
+          rawFields,
+          entries: parsedRanges,
+        } as unknown as Prisma.InputJsonValue)
+      : ({
+          status: 'partial',
+          rawFields,
+        } as Prisma.InputJsonValue);
   }
 
   private extractAdmissionFee(intro: TourApiIntroDetailItem) {

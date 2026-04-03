@@ -167,7 +167,10 @@ describe('ConsensusService', () => {
         photoScore: 52,
         budgetScore: 48,
         themeScore: 55,
-        operatingHours: { status: 'known' },
+        operatingHours: {
+          status: 'known',
+          entries: [{ openMinutes: 600, closeMinutes: 840, closesNextDay: false, raw: '10:00~14:00', sourceKey: 'usetimefood' }],
+        },
         metadataTags: { contentTypeId: '39' },
       },
       {
@@ -179,7 +182,10 @@ describe('ConsensusService', () => {
         photoScore: 72,
         budgetScore: 52,
         themeScore: 58,
-        operatingHours: { status: 'known' },
+        operatingHours: {
+          status: 'known',
+          entries: [{ openMinutes: 1020, closeMinutes: 1320, closesNextDay: false, raw: '17:00~22:00', sourceKey: 'usetimefood' }],
+        },
         metadataTags: { contentTypeId: '39' },
       },
       {
@@ -234,13 +240,125 @@ describe('ConsensusService', () => {
     const lunchSlot = balanced.slots.find((slot) => slot.orderIndex === 2)!;
     const finalSlot = balanced.slots.find((slot) => slot.orderIndex === balanced.slots.length)!;
 
-    expect(curatedPlaces.find((place) => place.id === lunchSlot.placeId)?.category).toBe('restaurant');
+    expect(lunchSlot.placeId).toBe(203);
     expect(
       balanced.slots
         .filter((slot) => slot.orderIndex < balanced.slots.length)
         .some((slot) => curatedPlaces.find((place) => place.id === slot.placeId)?.category === 'accommodation'),
     ).toBe(false);
     expect(['restaurant', 'shopping']).toContain(curatedPlaces.find((place) => place.id === finalSlot.placeId)?.category);
+  });
+
+  it('prefers places that are open during the slot over better-scored closed places', () => {
+    const timedPlaces: PlaceCandidate[] = [
+      {
+        id: 401,
+        name: '오픈 산책 명소',
+        address: '충남 공주',
+        category: 'tourist_attraction',
+        mobilityScore: 72,
+        photoScore: 68,
+        budgetScore: 40,
+        themeScore: 52,
+        operatingHours: {
+          status: 'known',
+          entries: [{ openMinutes: 540, closeMinutes: 660, closesNextDay: false, raw: '09:00~11:00', sourceKey: 'usetime' }],
+        },
+        metadataTags: { contentTypeId: '12' },
+      },
+      {
+        id: 402,
+        name: '닫힌 포토 스팟',
+        address: '충남 공주',
+        category: 'tourist_attraction',
+        mobilityScore: 90,
+        photoScore: 70,
+        budgetScore: 30,
+        themeScore: 60,
+        operatingHours: {
+          status: 'known',
+          entries: [{ openMinutes: 720, closeMinutes: 1080, closesNextDay: false, raw: '12:00~18:00', sourceKey: 'usetime' }],
+        },
+        metadataTags: { contentTypeId: '12' },
+      },
+      {
+        id: 403,
+        name: '점심 식당',
+        address: '충남 공주',
+        category: 'restaurant',
+        mobilityScore: 45,
+        photoScore: 52,
+        budgetScore: 48,
+        themeScore: 55,
+        operatingHours: {
+          status: 'known',
+          entries: [{ openMinutes: 660, closeMinutes: 900, closesNextDay: false, raw: '11:00~15:00', sourceKey: 'usetimefood' }],
+        },
+        metadataTags: { contentTypeId: '39' },
+      },
+      {
+        id: 404,
+        name: '박물관',
+        address: '충남 공주',
+        category: 'cultural_facility',
+        mobilityScore: 40,
+        photoScore: 56,
+        budgetScore: 42,
+        themeScore: 62,
+        operatingHours: { status: 'always' },
+        metadataTags: { contentTypeId: '14' },
+      },
+      {
+        id: 405,
+        name: '전통시장',
+        address: '충남 공주',
+        category: 'shopping',
+        mobilityScore: 55,
+        photoScore: 57,
+        budgetScore: 72,
+        themeScore: 74,
+        operatingHours: { status: 'always' },
+        metadataTags: { contentTypeId: '38' },
+      },
+      {
+        id: 406,
+        name: '수목원',
+        address: '충남 태안',
+        category: 'tourist_attraction',
+        mobilityScore: 50,
+        photoScore: 73,
+        budgetScore: 43,
+        themeScore: 22,
+        operatingHours: { status: 'always' },
+        metadataTags: { contentTypeId: '12', populationDeclineArea: true },
+      },
+      {
+        id: 407,
+        name: '리조트',
+        address: '충남 보령',
+        category: 'accommodation',
+        mobilityScore: 30,
+        photoScore: 42,
+        budgetScore: 68,
+        themeScore: 34,
+        operatingHours: { status: 'always' },
+        metadataTags: { contentTypeId: '32' },
+      },
+    ];
+
+    const options = service.buildScheduleOptions({
+      roomId: 1,
+      destination: '충남',
+      tripDate: '2026-05-02',
+      startTime: '09:00',
+      endTime: '21:00',
+      members,
+      places: timedPlaces,
+    });
+
+    const balanced = options.find((option) => option.optionType === ScheduleOptionType.BALANCED)!;
+    expect(balanced.slots[0]?.placeId).toBe(401);
+    expect(balanced.slots[0]?.placeId).not.toBe(402);
   });
 
   it('filters out date-mismatched festivals when generating schedules', () => {

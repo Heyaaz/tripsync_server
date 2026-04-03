@@ -103,6 +103,8 @@ interface SlotSelectionProfile {
   isFinalSlot: boolean;
   isEarlySlot: boolean;
   isLateSlot: boolean;
+  startMinutes: number;
+  endMinutes: number;
 }
 
 interface OptionContext {
@@ -535,6 +537,11 @@ export class ConsensusService {
       pool = validFestivalPool;
     }
 
+    const openNowPool = pool.filter((place) => this.isPlaceOpenDuringSlot(place, input.profile) !== false);
+    if (openNowPool.length > 0) {
+      pool = openNowPool;
+    }
+
     if (!input.profile.isFinalSlot) {
       const withoutAccommodation = pool.filter((place) => !this.isAccommodationPlace(place));
       if (withoutAccommodation.length > 0) {
@@ -579,10 +586,16 @@ export class ConsensusService {
       score -= 0.08;
     }
     if (this.hasUnknownHours(place)) {
-      score -= 0.03;
+      score -= 0.08;
     }
     if (preferHiddenGem && this.isHiddenGem(place)) {
       score += 0.2;
+    }
+    const operatingAvailability = this.isPlaceOpenDuringSlot(place, profile);
+    if (operatingAvailability === true) {
+      score += 0.05;
+    } else if (operatingAvailability === false) {
+      score -= 0.35;
     }
     score += this.placeCategoryModifier(place, tripDate, profile);
     return score;
@@ -668,6 +681,8 @@ export class ConsensusService {
       isFinalSlot: orderIndex === totalSlots,
       isEarlySlot: orderIndex === 1 || startMinutes < 11 * 60,
       isLateSlot: startMinutes >= 16 * 60 || endMinutes > 18 * 60,
+      startMinutes,
+      endMinutes,
     };
   }
 
@@ -736,6 +751,40 @@ export class ConsensusService {
     }
     const digits = String(value).replace(/\D/g, '');
     return digits.length >= 8 ? digits.slice(0, 8) : null;
+  }
+
+  private isPlaceOpenDuringSlot(place: PlaceCandidate, profile: SlotSelectionProfile): boolean | null {
+    if (!place.operatingHours || typeof place.operatingHours !== 'object' || Array.isArray(place.operatingHours)) {
+      return null;
+    }
+
+    const hours = place.operatingHours as Record<string, unknown>;
+    const status = hours.status;
+    if (status === 'always') {
+      return true;
+    }
+    if (status !== 'known') {
+      return null;
+    }
+
+    const entries = Array.isArray(hours.entries) ? hours.entries : [];
+    if (entries.length === 0) {
+      return null;
+    }
+
+    return entries.some((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return false;
+      }
+      const record = entry as Record<string, unknown>;
+      const openMinutes = typeof record.openMinutes === 'number' ? record.openMinutes : null;
+      const closeMinutes = typeof record.closeMinutes === 'number' ? record.closeMinutes : null;
+      if (openMinutes == null || closeMinutes == null) {
+        return false;
+      }
+
+      return profile.startMinutes >= openMinutes && profile.endMinutes <= closeMinutes;
+    });
   }
 
   private placeScores(place: PlaceCandidate): AxisScores {
