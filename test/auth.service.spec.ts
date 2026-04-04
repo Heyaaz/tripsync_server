@@ -49,6 +49,14 @@ describe('AuthService', () => {
         }),
       }),
     );
+    expect(prisma.user.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          email: 'minji@example.com',
+          authProvider: AuthProvider.LOCAL,
+        }),
+      }),
+    );
     expect(result.response.data?.user.authProvider).toBe(AuthProvider.LOCAL);
   });
 

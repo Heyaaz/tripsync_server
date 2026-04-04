@@ -2,6 +2,8 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { User } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
+import { readEnv } from '../common/env.util';
+import { readMetadataObject } from '../common/metadata.util';
 import { ok } from '../common/dto/api-response.dto';
 import { DomainException } from '../common/errors/domain.exception';
 import {
@@ -25,26 +27,18 @@ export class TourApiService {
     private readonly placeService: PlaceService,
   ) {}
 
-  private readEnv(name: string) {
-    const value = process.env[name]?.trim();
-    if (!value || value === 'replace-me') {
-      return undefined;
-    }
-    return value;
-  }
-
   private getConfig() {
-    const serviceKey = this.readEnv('TOUR_API_SERVICE_KEY');
+    const serviceKey = readEnv('TOUR_API_SERVICE_KEY');
     if (!serviceKey) {
       throw new DomainException(HttpStatus.BAD_GATEWAY, 'INVALID_REQUEST', 'TourAPI 서비스키가 설정되지 않았습니다.');
     }
 
     return {
-      baseUrl: this.readEnv('TOUR_API_BASE_URL') ?? 'https://apis.data.go.kr/B551011/KorService2',
+      baseUrl: readEnv('TOUR_API_BASE_URL') ?? 'https://apis.data.go.kr/B551011/KorService2',
       serviceKey,
-      mobileOs: this.readEnv('TOUR_API_MOBILE_OS') ?? 'ETC',
-      mobileApp: this.readEnv('TOUR_API_MOBILE_APP') ?? 'TripSync',
-      responseType: this.readEnv('TOUR_API_RESPONSE_TYPE') ?? 'json',
+      mobileOs: readEnv('TOUR_API_MOBILE_OS') ?? 'ETC',
+      mobileApp: readEnv('TOUR_API_MOBILE_APP') ?? 'TripSync',
+      responseType: readEnv('TOUR_API_RESPONSE_TYPE') ?? 'json',
     };
   }
 
@@ -76,7 +70,7 @@ export class TourApiService {
 
     const response = await fetch(`${config.baseUrl}/areaBasedList2?${params.toString()}`);
     if (!response.ok) {
-      throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'TourAPI 호출에 실패했습니다.', {
+      throw new DomainException(HttpStatus.BAD_GATEWAY, 'TOUR_API_ERROR', 'TourAPI 호출에 실패했습니다.', {
         status: response.status,
         body: await response.text(),
         contentTypeId,
@@ -88,7 +82,7 @@ export class TourApiService {
     const body = payload?.response?.body;
     const header = payload?.response?.header;
     if (header?.resultCode !== '0000') {
-      throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'TourAPI 응답 오류가 발생했습니다.', {
+      throw new DomainException(HttpStatus.BAD_GATEWAY, 'TOUR_API_ERROR', 'TourAPI 응답 오류가 발생했습니다.', {
         header,
         contentTypeId,
         pageNo,
@@ -137,7 +131,7 @@ export class TourApiService {
 
     const response = await fetch(`${config.baseUrl}/detailCommon2?${params.toString()}`);
     if (!response.ok) {
-      throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'TourAPI 공통정보 조회에 실패했습니다.', {
+      throw new DomainException(HttpStatus.BAD_GATEWAY, 'TOUR_API_ERROR', 'TourAPI 공통정보 조회에 실패했습니다.', {
         status: response.status,
         body: await response.text(),
         contentId,
@@ -147,7 +141,7 @@ export class TourApiService {
     const payload = (await response.json()) as any;
     const header = payload?.response?.header;
     if (header?.resultCode !== '0000') {
-      throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'TourAPI 공통정보 응답 오류가 발생했습니다.', {
+      throw new DomainException(HttpStatus.BAD_GATEWAY, 'TOUR_API_ERROR', 'TourAPI 공통정보 응답 오류가 발생했습니다.', {
         header,
         contentId,
       });
@@ -170,7 +164,7 @@ export class TourApiService {
 
     const response = await fetch(`${config.baseUrl}/detailIntro2?${params.toString()}`);
     if (!response.ok) {
-      throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'TourAPI 소개정보 조회에 실패했습니다.', {
+      throw new DomainException(HttpStatus.BAD_GATEWAY, 'TOUR_API_ERROR', 'TourAPI 소개정보 조회에 실패했습니다.', {
         status: response.status,
         body: await response.text(),
         contentId,
@@ -181,7 +175,7 @@ export class TourApiService {
     const payload = (await response.json()) as any;
     const header = payload?.response?.header;
     if (header?.resultCode !== '0000') {
-      throw new DomainException(HttpStatus.BAD_GATEWAY, 'OAUTH_PROVIDER_ERROR', 'TourAPI 소개정보 응답 오류가 발생했습니다.', {
+      throw new DomainException(HttpStatus.BAD_GATEWAY, 'TOUR_API_ERROR', 'TourAPI 소개정보 응답 오류가 발생했습니다.', {
         header,
         contentId,
         contentTypeId,
@@ -229,10 +223,9 @@ export class TourApiService {
   }
 
   private getContentTypeIdFromMetadata(metadataTags: Prisma.JsonValue | null) {
-    if (!metadataTags || typeof metadataTags !== 'object' || Array.isArray(metadataTags)) {
-      return null;
-    }
-    const value = (metadataTags as Record<string, unknown>).contentTypeId;
+    const obj = readMetadataObject(metadataTags);
+    if (!obj) return null;
+    const value = obj.contentTypeId;
     return typeof value === 'string' ? value : typeof value === 'number' ? String(value) : null;
   }
 
@@ -255,8 +248,10 @@ export class TourApiService {
       }
 
       try {
-        const common = await this.withRetry(() => this.fetchDetailCommon(place.tourApiId));
-        const intro = await this.withRetry(() => this.fetchDetailIntro(place.tourApiId, contentTypeId));
+        const [common, intro] = await Promise.all([
+          this.withRetry(() => this.fetchDetailCommon(place.tourApiId)),
+          this.withRetry(() => this.fetchDetailIntro(place.tourApiId, contentTypeId)),
+        ]);
         await this.placeService.enrichPlaceDetails(place.id, common, intro);
         enriched += 1;
       } catch {

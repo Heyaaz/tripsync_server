@@ -247,7 +247,7 @@ export class ScheduleService extends BaseSoftDeleteService {
     });
 
     if (!schedule) {
-      throw new DomainException(HttpStatus.NOT_FOUND, 'ROOM_NOT_FOUND', '일정을 찾을 수 없습니다.');
+      throw new DomainException(HttpStatus.NOT_FOUND, 'SCHEDULE_NOT_FOUND', '일정을 찾을 수 없습니다.');
     }
 
     await this.ensureRoomMember(schedule.roomId, user.id);
@@ -295,7 +295,7 @@ export class ScheduleService extends BaseSoftDeleteService {
     });
 
     if (!latest) {
-      throw new DomainException(HttpStatus.UNPROCESSABLE_ENTITY, 'ROOM_NOT_READY', '확정할 일정 옵션이 없습니다.');
+      throw new DomainException(HttpStatus.NOT_FOUND, 'SCHEDULE_NOT_FOUND', '확정할 일정 옵션이 없습니다.');
     }
 
     const target = await this.prisma.schedule.findFirst({
@@ -303,7 +303,7 @@ export class ScheduleService extends BaseSoftDeleteService {
     });
 
     if (!target) {
-      throw new DomainException(HttpStatus.NOT_FOUND, 'SCHEDULE_GENERATION_FAILED', '선택한 일정 옵션을 찾을 수 없습니다.');
+      throw new DomainException(HttpStatus.NOT_FOUND, 'SCHEDULE_NOT_FOUND', '선택한 일정 옵션을 찾을 수 없습니다.');
     }
 
     await this.prisma.$transaction([
@@ -332,7 +332,7 @@ export class ScheduleService extends BaseSoftDeleteService {
     });
 
     if (!existing) {
-      throw new DomainException(HttpStatus.NOT_FOUND, 'ROOM_NOT_FOUND', '재생성할 일정을 찾을 수 없습니다.');
+      throw new DomainException(HttpStatus.NOT_FOUND, 'SCHEDULE_NOT_FOUND', '재생성할 일정을 찾을 수 없습니다.');
     }
 
     const regenerated = await this.generateSchedule(
@@ -370,7 +370,7 @@ export class ScheduleService extends BaseSoftDeleteService {
     });
 
     if (!schedule) {
-      throw new DomainException(HttpStatus.NOT_FOUND, 'ROOM_NOT_FOUND', '공유할 일정을 찾을 수 없습니다.');
+      throw new DomainException(HttpStatus.NOT_FOUND, 'SCHEDULE_NOT_FOUND', '공유할 일정을 찾을 수 없습니다.');
     }
 
     return ok({

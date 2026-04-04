@@ -24,7 +24,7 @@
 
 ### 2.2 인증 방식
 
-- 방장 인증은 **Google OAuth 전용**이다.
+- 방장 인증은 **Google OAuth 또는 이메일/비밀번호 로그인**을 사용한다.
 - 동행자는 `POST /api/auth/guest`로 게스트 세션을 발급받는다.
 - 서비스 세션은 JWT 기반이며, 브라우저 환경에서는 **HttpOnly Secure Cookie**를 기본 사용 방식으로 정의한다.
 - 프론트엔드는 `credentials: include`로 API를 호출한다.
@@ -98,11 +98,12 @@
 | `ROOM_NOT_FOUND` | 방을 찾을 수 없음 |
 | `ROOM_ALREADY_JOINED` | 이미 참여한 방 |
 | `ROOM_NOT_READY` | 일정 생성 가능한 상태가 아님 |
+| `SCHEDULE_NOT_FOUND` | 일정을 찾을 수 없음 |
 | `TPTI_INCOMPLETE` | TPTI 결과가 없는 사용자 존재 |
 | `INVALID_SHARE_CODE` | 공유 코드가 유효하지 않음 |
 | `OAUTH_STATE_INVALID` | OAuth state 검증 실패 |
 | `OAUTH_PROVIDER_ERROR` | OAuth 공급자 응답 오류 |
-| `SCHEDULE_GENERATION_FAILED` | 일정 생성 실패 |
+| `TOUR_API_ERROR` | TourAPI 응답 오류 |
 | `LLM_INVALID_RESPONSE` | LLM 응답 스키마 오류 |
 | `PLACE_CANDIDATE_EMPTY` | 후보 장소 부족 |
 | `RESOURCE_DELETED` | soft delete된 리소스 접근 |
@@ -118,7 +119,7 @@
 - 인증: 없음
 - 응답: `201`
 - 동작:
-  1. 이메일 중복 검사
+  1. `auth_provider=local` 기준 이메일 중복 검사
   2. 비밀번호 해시 생성
   3. `users` 생성 (`auth_provider=local`)
   4. `ts_access_token` 쿠키 설정

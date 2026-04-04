@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { AuthProvider } from '../common/enums/domain.enums';
+import { readEnv } from '../common/env.util';
 
 export interface SessionPayload {
   sub: number;
@@ -33,7 +34,7 @@ export function getOauthStateCookieName() {
   return OAUTH_STATE_COOKIE_NAME;
 }
 
-export function issueSessionToken(payload: SessionPayload, secret = process.env.JWT_SECRET ?? DEFAULT_SECRET) {
+export function issueSessionToken(payload: SessionPayload, secret = readEnv('JWT_SECRET') ?? DEFAULT_SECRET) {
   const header = base64UrlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const body = base64UrlEncode(JSON.stringify(payload));
   const unsigned = `${header}.${body}`;
@@ -41,7 +42,7 @@ export function issueSessionToken(payload: SessionPayload, secret = process.env.
   return `${unsigned}.${signature}`;
 }
 
-export function verifySessionToken(token: string, secret = process.env.JWT_SECRET ?? DEFAULT_SECRET) {
+export function verifySessionToken(token: string, secret = readEnv('JWT_SECRET') ?? DEFAULT_SECRET) {
   const [header, body, signature] = token.split('.');
   if (!header || !body || !signature) {
     return null;

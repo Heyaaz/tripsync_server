@@ -9,13 +9,13 @@
 
 ## 1. 문서 목적
 
-본 문서는 TripSync MVP의 기능 정확성, 일정 생성 품질, OAuth 인증 안정성, 모바일 웹 사용성을 검증하기 위한 테스트 범위와 통과 기준을 정의한다.
+본 문서는 TripSync MVP의 기능 정확성, 일정 생성 품질, 인증/세션 안정성, 모바일 웹 사용성을 검증하기 위한 테스트 범위와 통과 기준을 정의한다.
 
 ## 2. 테스트 목표
 
 ### 2.1 기능 목표
 
-- 방장 OAuth 로그인 성공
+- 방장 Google OAuth/일반 로그인 성공
 - 동행자 비회원 참여 성공
 - TPTI 검사/결과 산출 성공
 - 갈등 지도 생성 성공
@@ -36,7 +36,7 @@
 
 ### 3.1 포함 범위
 
-- 인증(OAuth/Guest)
+- 인증(Local/OAuth/Guest)
 - TPTI 점수 계산
 - 방 생성/참여
 - 갈등 지도 계산
@@ -61,7 +61,7 @@
 | 프론트 | Next.js local/staging |
 | 백엔드 | NestJS local/staging |
 | DB | MySQL 8 local/staging |
-| OAuth | Kakao Dev App, Google OAuth Test App |
+| OAuth | Google OAuth Test App + local auth fixture |
 | 브라우저 | Chrome 모바일 에뮬레이터, Safari iPhone, 모바일 인앱 브라우저 |
 | 데이터 | 충남권 샘플 장소 데이터 + TourAPI 캐시 |
 
@@ -183,6 +183,7 @@
 | IT-SCH-006 | 3옵션 응답 구조 검증 | 응답에 `balanced`, `individual`, `discovery` 옵션 모두 포함 |
 | IT-SCH-007 | 옵션 선택 확정 | `POST /api/rooms/:id/confirm-schedule` 후 선택 옵션 `is_confirmed=true` |
 | IT-SCH-008 | discovery 옵션 인구감소지역 포함 | discovery 옵션 슬롯 중 최소 1곳이 인구감소지역 장소 |
+| IT-SCH-009 | 일정 단건 조회/확정/재생성 대상 없음 | `404 SCHEDULE_NOT_FOUND` 반환 |
 
 ### 7.5 배치/데이터
 
@@ -191,6 +192,7 @@
 | IT-BATCH-001 | TourAPI upsert | places upsert 성공 |
 | IT-BATCH-002 | 운영시간 정규화 실패 | `unknown` 저장 + 후보 후순위 |
 | IT-BATCH-003 | 메타 태깅 점수 저장 | 4축 점수 정상 저장 |
+| IT-BATCH-004 | TourAPI 외부 호출 실패 | `502 TOUR_API_ERROR` 또는 재시도 후 실패 집계 |
 
 ---
 

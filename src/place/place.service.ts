@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { readMetadataObject } from '../common/metadata.util';
+import { ACTIVE_DEL_YN } from '../common/soft-delete/soft-delete.util';
 
 
 export interface TourApiCommonDetailItem {
@@ -60,7 +62,6 @@ interface ParsedOperatingRange {
   sourceKey: string;
 }
 
-type PlaceMetadataMap = Record<string, unknown>;
 
 @Injectable()
 export class PlaceService {
@@ -179,27 +180,24 @@ export class PlaceService {
     let skipped = 0;
     let unchanged = 0;
 
-    for (const item of items) {
-      const normalized = this.normalizeTourApiPlace(item);
-      if (!normalized || Number.isNaN(normalized.latitude) || Number.isNaN(normalized.longitude)) {
-        skipped += 1;
-        continue;
-      }
+    const validItems = items
+      .map((item) => this.normalizeTourApiPlace(item))
+      .filter((n): n is NonNullable<typeof n> => n != null && !Number.isNaN(n.latitude) && !Number.isNaN(n.longitude));
+    skipped = items.length - validItems.length;
 
-      const existing = await this.prisma.place.findUnique({
-        where: { tourApiId: normalized.tourApiId },
-        select: {
-          id: true,
-          delYn: true,
-          metadataTags: true,
-        },
-      });
+    const existingList = await this.prisma.place.findMany({
+      where: { tourApiId: { in: validItems.map((n) => n.tourApiId) } },
+      select: { tourApiId: true, delYn: true, metadataTags: true },
+    });
+    const existingMap = new Map(existingList.map((e) => [e.tourApiId, e]));
 
-      const existingMetadata = this.readMetadataObject(existing?.metadataTags);
-      const nextMetadata = this.readMetadataObject(normalized.metadataTags);
+    for (const normalized of validItems) {
+      const existing = existingMap.get(normalized.tourApiId);
+      const existingMetadata = readMetadataObject(existing?.metadataTags ?? null);
+      const nextMetadata = readMetadataObject(normalized.metadataTags);
       if (
         existing &&
-        existing.delYn === 'N' &&
+        existing.delYn === ACTIVE_DEL_YN &&
         existingMetadata?.sourceModifiedTime &&
         nextMetadata?.sourceModifiedTime &&
         existingMetadata.sourceModifiedTime === nextMetadata.sourceModifiedTime
@@ -208,43 +206,27 @@ export class PlaceService {
         continue;
       }
 
+      const data = {
+        name: normalized.name,
+        address: normalized.address,
+        latitude: normalized.latitude,
+        longitude: normalized.longitude,
+        category: normalized.category,
+        imageUrl: normalized.imageUrl,
+        operatingHours: normalized.operatingHours,
+        admissionFee: normalized.admissionFee,
+        mobilityScore: normalized.mobilityScore,
+        photoScore: normalized.photoScore,
+        budgetScore: normalized.budgetScore,
+        themeScore: normalized.themeScore,
+        metadataTags: normalized.metadataTags,
+        delYn: ACTIVE_DEL_YN,
+      };
+
       await this.prisma.place.upsert({
-        where: {
-          tourApiId: normalized.tourApiId,
-        },
-        update: {
-          name: normalized.name,
-          address: normalized.address,
-          latitude: normalized.latitude,
-          longitude: normalized.longitude,
-          category: normalized.category,
-          imageUrl: normalized.imageUrl,
-          operatingHours: normalized.operatingHours,
-          admissionFee: normalized.admissionFee,
-          mobilityScore: normalized.mobilityScore,
-          photoScore: normalized.photoScore,
-          budgetScore: normalized.budgetScore,
-          themeScore: normalized.themeScore,
-          metadataTags: normalized.metadataTags,
-          delYn: 'N',
-        },
-        create: {
-          tourApiId: normalized.tourApiId,
-          name: normalized.name,
-          address: normalized.address,
-          latitude: normalized.latitude,
-          longitude: normalized.longitude,
-          category: normalized.category,
-          imageUrl: normalized.imageUrl,
-          operatingHours: normalized.operatingHours,
-          admissionFee: normalized.admissionFee,
-          mobilityScore: normalized.mobilityScore,
-          photoScore: normalized.photoScore,
-          budgetScore: normalized.budgetScore,
-          themeScore: normalized.themeScore,
-          metadataTags: normalized.metadataTags,
-          delYn: 'N',
-        },
+        where: { tourApiId: normalized.tourApiId },
+        update: data,
+        create: { tourApiId: normalized.tourApiId, ...data },
       });
       synced += 1;
     }
@@ -252,23 +234,16 @@ export class PlaceService {
     return { synced, skipped, unchanged };
   }
 
-  private readMetadataObject(metadataTags: unknown) {
-    if (!metadataTags || typeof metadataTags !== 'object' || Array.isArray(metadataTags)) {
-      return null;
-    }
-    return metadataTags as PlaceMetadataMap;
-  }
-
   async listPlacesForEnrichment(limit: number) {
     return this.prisma.place.findMany({
-      where: { delYn: 'N' },
+      where: { delYn: ACTIVE_DEL_YN },
       orderBy: { id: 'asc' },
       take: limit,
     });
   }
 
   needsDetailEnrichment(place: { metadataTags: Prisma.JsonValue | null }) {
-    const metadata = this.readMetadataObject(place.metadataTags);
+    const metadata = readMetadataObject(place.metadataTags);
     if (!metadata) {
       return true;
     }
@@ -447,9 +422,7 @@ export class PlaceService {
       return null;
     }
 
-    const currentMetadata = current.metadataTags && typeof current.metadataTags === 'object' && !Array.isArray(current.metadataTags)
-      ? (current.metadataTags as Record<string, unknown>)
-      : {};
+    const currentMetadata = readMetadataObject(current.metadataTags) ?? {};
 
     const mergedMetadata = {
       ...currentMetadata,
@@ -479,7 +452,7 @@ export class PlaceService {
 
   async findCandidatePlaces() {
     return this.prisma.place.findMany({
-      where: { delYn: 'N' },
+      where: { delYn: ACTIVE_DEL_YN },
       orderBy: { id: 'asc' },
     });
   }

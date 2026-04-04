@@ -36,7 +36,7 @@ describe('PlaceService', () => {
   });
 
   it('upserts only valid places', async () => {
-    prisma.place.findUnique.mockResolvedValue(null);
+    prisma.place.findMany.mockResolvedValue([]);
     prisma.place.upsert.mockResolvedValue({});
     const result = await service.upsertTourApiPlaces([
       { contentid: '1', contenttypeid: '12', title: '공산성', addr1: '충남 공주', mapx: '127.1', mapy: '36.4' },
@@ -48,11 +48,11 @@ describe('PlaceService', () => {
   });
 
   it('skips unchanged upserts when source modified time matches', async () => {
-    prisma.place.findUnique.mockResolvedValue({
-      id: BigInt(1),
+    prisma.place.findMany.mockResolvedValue([{
+      tourApiId: '1',
       delYn: 'N',
       metadataTags: { sourceModifiedTime: '20260403101010' },
-    });
+    }]);
 
     const result = await service.upsertTourApiPlaces([
       {

@@ -2,6 +2,7 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { User } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
+import { readEnv } from '../common/env.util';
 import { ok } from '../common/dto/api-response.dto';
 import { DomainException } from '../common/errors/domain.exception';
 import { BaseSoftDeleteService } from '../common/soft-delete/base-soft-delete.service';
@@ -101,7 +102,7 @@ export class TptiService extends BaseSoftDeleteService {
 
   async submitResult(dto: SubmitTptiDto, user: User) {
     const calculatedScores = this.calculateScores(dto.answers);
-    const shouldApplyManualAdjustments = process.env.TPTI_MANUAL_ADJUSTMENTS_ENABLED === 'true';
+    const shouldApplyManualAdjustments = readEnv('TPTI_MANUAL_ADJUSTMENTS_ENABLED') === 'true';
     const finalScores = dto.manualAdjustments && shouldApplyManualAdjustments ? dto.manualAdjustments : calculatedScores;
     const characterName = this.buildCharacterName(finalScores);
 

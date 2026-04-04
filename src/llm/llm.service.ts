@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ReasonAxis, ScheduleOptionType, ScoreAxis, SlotType } from '../common/enums/domain.enums';
+import { readEnv } from '../common/env.util';
 
 interface LlmCandidatePlace {
   id: number;
@@ -62,26 +63,18 @@ export interface LlmRefineResult {
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
 
-  private readEnv(name: string) {
-    const value = process.env[name]?.trim();
-    if (!value || value === 'replace-me') {
-      return undefined;
-    }
-    return value;
-  }
-
   private pickProvider() {
-    const forced = this.readEnv('LLM_PROVIDER');
-    if (forced === 'openai' && this.readEnv('OPENAI_API_KEY')) {
+    const forced = readEnv('LLM_PROVIDER');
+    if (forced === 'openai' && readEnv('OPENAI_API_KEY')) {
       return 'openai' as const;
     }
-    if (forced === 'gemini' && this.readEnv('GEMINI_API_KEY')) {
+    if (forced === 'gemini' && readEnv('GEMINI_API_KEY')) {
       return 'gemini' as const;
     }
-    if (this.readEnv('OPENAI_API_KEY')) {
+    if (readEnv('OPENAI_API_KEY')) {
       return 'openai' as const;
     }
-    if (this.readEnv('GEMINI_API_KEY')) {
+    if (readEnv('GEMINI_API_KEY')) {
       return 'gemini' as const;
     }
     return null;
@@ -208,12 +201,12 @@ export class LlmService {
   }
 
   private async requestOpenAi(input: LlmRefineRequest): Promise<Omit<LlmRefineResult, 'latencyMs'> | null> {
-    const apiKey = this.readEnv('OPENAI_API_KEY');
+    const apiKey = readEnv('OPENAI_API_KEY');
     if (!apiKey) {
       return null;
     }
 
-    const model = this.readEnv('OPENAI_MODEL') ?? 'gpt-5';
+    const model = readEnv('OPENAI_MODEL') ?? 'gpt-5';
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: {
@@ -283,12 +276,12 @@ export class LlmService {
   }
 
   private async requestGemini(input: LlmRefineRequest): Promise<Omit<LlmRefineResult, 'latencyMs'> | null> {
-    const apiKey = this.readEnv('GEMINI_API_KEY');
+    const apiKey = readEnv('GEMINI_API_KEY');
     if (!apiKey) {
       return null;
     }
 
-    const model = this.readEnv('GEMINI_MODEL') ?? 'gemini-3-flash-preview';
+    const model = readEnv('GEMINI_MODEL') ?? 'gemini-3-flash-preview';
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: 'POST',
       headers: {

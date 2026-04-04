@@ -8,7 +8,10 @@ import {
   SlotType,
 } from '../common/enums/domain.enums';
 import { DomainException } from '../common/errors/domain.exception';
+import { readMetadataObject } from '../common/metadata.util';
 import { LlmService } from '../llm/llm.service';
+
+const DETERMINISTIC_PROVIDER = 'deterministic-consensus';
 
 export interface AxisScores {
   mobility: number;
@@ -102,6 +105,18 @@ interface TargetVector {
   endTime: Date;
 }
 
+interface SlotShortlist {
+  orderIndex: number;
+  startTime: string;
+  endTime: string;
+  slotType: SlotType;
+  targetUserId: number | null;
+  reasonAxis: ReasonAxis | ScoreAxis;
+  candidatePlaces: Array<{ id: number; name: string; category: string; address: string }>;
+  deterministicPlaceId: number;
+  deterministicReason: string;
+}
+
 interface SlotSelectionProfile {
   isMealSlot: boolean;
   isFinalSlot: boolean;
@@ -131,7 +146,7 @@ const SLOT_TEMPLATES: Record<5 | 6 | 7, number[]> = {
 export class ConsensusService {
   private readonly logger = new Logger(ConsensusService.name);
 
-  constructor(private readonly llmService: LlmService = new LlmService()) {}
+  constructor(private readonly llmService: LlmService) {}
 
   analyzeGroup(members: MemberSnapshot[]) {
     if (members.length < 2) {
@@ -187,55 +202,55 @@ export class ConsensusService {
     const baseShapes = this.buildIndividualSlotShapes(slotTemplate, analysis, context.members);
     const averageVector = this.getAverageScores(context.members);
 
-    const individual = await this.materializeOption(
-      ScheduleOptionType.INDIVIDUAL,
-      '개성형',
-      '각자의 취향이 살아있는 교대 배분 일정',
-      baseShapes.map((shape) => this.buildIndividualTarget(shape, analysis, context.members, averageVector)),
-      context.places,
-      60,
-      false,
-      context.members,
-      context.tripDate,
-      analysis,
-      context,
-    );
-
-    const balanced = await this.materializeOption(
-      ScheduleOptionType.BALANCED,
-      '균형형',
-      '모두가 조금씩 만족하는 안전한 선택',
-      baseShapes.map((shape) => ({
-        scores: averageVector,
-        targetUserId: null,
-        slotType: SlotType.COMMON,
-        reasonAxis: ReasonAxis.COMMON,
-        reasonText: '그룹 전원의 평균 취향 반영',
-        startTime: shape.startTime,
-        endTime: shape.endTime,
-      })),
-      context.places,
-      65,
-      false,
-      context.members,
-      context.tripDate,
-      analysis,
-      context,
-    );
-
-    const discovery = await this.materializeOption(
-      ScheduleOptionType.DISCOVERY,
-      '지역 발굴형',
-      '충남 인구감소지역 숨은 명소 중심 탐험 일정',
-      baseShapes.map((shape) => this.buildIndividualTarget(shape, analysis, context.members, averageVector)),
-      context.places,
-      55,
-      true,
-      context.members,
-      context.tripDate,
-      analysis,
-      context,
-    );
+    const [individual, balanced, discovery] = await Promise.all([
+      this.materializeOption(
+        ScheduleOptionType.INDIVIDUAL,
+        '개성형',
+        '각자의 취향이 살아있는 교대 배분 일정',
+        baseShapes.map((shape) => this.buildIndividualTarget(shape, analysis, context.members, averageVector)),
+        context.places,
+        60,
+        false,
+        context.members,
+        context.tripDate,
+        analysis,
+        context,
+      ),
+      this.materializeOption(
+        ScheduleOptionType.BALANCED,
+        '균형형',
+        '모두가 조금씩 만족하는 안전한 선택',
+        baseShapes.map((shape) => ({
+          scores: averageVector,
+          targetUserId: null,
+          slotType: SlotType.COMMON,
+          reasonAxis: ReasonAxis.COMMON,
+          reasonText: '그룹 전원의 평균 취향 반영',
+          startTime: shape.startTime,
+          endTime: shape.endTime,
+        })),
+        context.places,
+        65,
+        false,
+        context.members,
+        context.tripDate,
+        analysis,
+        context,
+      ),
+      this.materializeOption(
+        ScheduleOptionType.DISCOVERY,
+        '지역 발굴형',
+        '충남 인구감소지역 숨은 명소 중심 탐험 일정',
+        baseShapes.map((shape) => this.buildIndividualTarget(shape, analysis, context.members, averageVector)),
+        context.places,
+        55,
+        true,
+        context.members,
+        context.tripDate,
+        analysis,
+        context,
+      ),
+    ]);
 
     return [balanced, individual, discovery];
   }
@@ -383,29 +398,23 @@ export class ConsensusService {
     members: MemberSnapshot[],
     averageVector: AxisScores,
   ) {
+    const commonFallback = {
+      scores: averageVector,
+      targetUserId: null as null,
+      slotType: SlotType.COMMON,
+      reasonAxis: ReasonAxis.COMMON as ReasonAxis | ScoreAxis,
+      reasonText: '그룹 공통 지대 반영',
+      startTime: shape.startTime,
+      endTime: shape.endTime,
+    };
+
     if (shape.slotType === SlotType.COMMON || shape.targetUserId == null || shape.reasonAxis === ReasonAxis.COMMON) {
-      return {
-        scores: averageVector,
-        targetUserId: null,
-        slotType: SlotType.COMMON,
-        reasonAxis: ReasonAxis.COMMON,
-        reasonText: '그룹 공통 지대 반영',
-        startTime: shape.startTime,
-        endTime: shape.endTime,
-      };
+      return commonFallback;
     }
 
     const targetMember = members.find((member) => member.userId === shape.targetUserId);
     if (!targetMember) {
-      return {
-        scores: averageVector,
-        targetUserId: null,
-        slotType: SlotType.COMMON,
-        reasonAxis: ReasonAxis.COMMON,
-        reasonText: '그룹 공통 지대 반영',
-        startTime: shape.startTime,
-        endTime: shape.endTime,
-      };
+      return commonFallback;
     }
 
     const mergedScores = SCORE_AXES.reduce<AxisScores>((acc, axis) => {
@@ -445,17 +454,7 @@ export class ConsensusService {
   ): Promise<ScheduleOptionDraft> {
     const chosenPlaces: PlaceCandidate[] = [];
     const forcedHiddenGemIndex = preferHiddenGem ? this.pickForcedHiddenGemSlot(targets) : -1;
-    const shortlistedPerSlot: Array<{
-      orderIndex: number;
-      startTime: string;
-      endTime: string;
-      slotType: SlotType;
-      targetUserId: number | null;
-      reasonAxis: ReasonAxis | ScoreAxis;
-      candidatePlaces: Array<{ id: number; name: string; category: string; address: string }>;
-      deterministicPlaceId: number;
-      deterministicReason: string;
-    }> = [];
+    const shortlistedPerSlot: SlotShortlist[] = [];
     const slots = targets.map((target, index) => {
       const profile = this.buildSlotSelectionProfile(target.startTime, target.endTime, index + 1, targets.length);
       const rankedPlaces = this.rankPlaces({
@@ -525,18 +524,20 @@ export class ConsensusService {
     });
 
     const finalSummary = llmRefined?.summary || summary;
+    const placesById = new Map(places.map((p) => [p.id, p]));
     const finalPlacesByOrder = new Map<number, PlaceCandidate>();
     if (llmRefined) {
       for (const slot of llmRefined.slots) {
-        const place = places.find((candidate) => candidate.id === slot.placeId);
+        const place = placesById.get(slot.placeId);
         if (place) {
           finalPlacesByOrder.set(slot.orderIndex, place);
         }
       }
     }
 
+    const refinedByOrder = new Map(llmRefined?.slots.map((s) => [s.orderIndex, s]) ?? []);
     const finalSlots = slots.map((slot) => {
-      const refined = llmRefined?.slots.find((entry) => entry.orderIndex === slot.orderIndex);
+      const refined = refinedByOrder.get(slot.orderIndex);
       const refinedPlace = finalPlacesByOrder.get(slot.orderIndex);
       if (!refined || !refinedPlace) {
         return slot;
@@ -562,7 +563,7 @@ export class ConsensusService {
     );
 
     this.logger.log(
-      `schedule_option optionType=${optionType} roomId=${context.roomId} provider=${llmRefined?.provider ?? 'deterministic-consensus'} latencyMs=${llmRefined?.latencyMs ?? 0} fallbackUsed=${llmRefined ? 'false' : 'true'} groupSatisfaction=${groupSatisfaction}`,
+      `schedule_option optionType=${optionType} roomId=${context.roomId} provider=${llmRefined?.provider ?? DETERMINISTIC_PROVIDER} latencyMs=${llmRefined?.latencyMs ?? 0} fallbackUsed=${llmRefined ? 'false' : 'true'} groupSatisfaction=${groupSatisfaction}`,
     );
 
     return {
@@ -572,7 +573,7 @@ export class ConsensusService {
       groupSatisfaction,
       slots: finalSlots,
       satisfactionByUser,
-      llmProvider: llmRefined?.provider ?? 'deterministic-consensus',
+      llmProvider: llmRefined?.provider ?? DETERMINISTIC_PROVIDER,
       llmLatencyMs: llmRefined?.latencyMs ?? null,
       fallbackUsed: !llmRefined,
     };
@@ -787,15 +788,8 @@ export class ConsensusService {
     return ((date.getUTCHours() + 9) % 24) * 60 + date.getUTCMinutes();
   }
 
-  private readMetadataObject(place: PlaceCandidate) {
-    if (!place.metadataTags || typeof place.metadataTags !== 'object' || Array.isArray(place.metadataTags)) {
-      return null;
-    }
-    return place.metadataTags as Record<string, unknown>;
-  }
-
   private getPlaceContentTypeId(place: PlaceCandidate) {
-    const metadata = this.readMetadataObject(place);
+    const metadata = readMetadataObject(place.metadataTags);
     const value = metadata?.contentTypeId;
     return typeof value === 'string' ? value : null;
   }
@@ -825,11 +819,8 @@ export class ConsensusService {
       return null;
     }
 
-    const metadata = this.readMetadataObject(place);
-    const introFields =
-      metadata?.introFields && typeof metadata.introFields === 'object' && !Array.isArray(metadata.introFields)
-        ? (metadata.introFields as Record<string, unknown>)
-        : null;
+    const metadata = readMetadataObject(place.metadataTags);
+    const introFields = readMetadataObject(metadata?.introFields);
 
     const start = this.parseYmdDate(introFields?.eventstartdate ?? introFields?.eventStartDate ?? metadata?.eventstartdate ?? metadata?.eventStartDate);
     const end = this.parseYmdDate(introFields?.eventenddate ?? introFields?.eventEndDate ?? metadata?.eventenddate ?? metadata?.eventEndDate);

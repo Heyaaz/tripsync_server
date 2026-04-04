@@ -3,6 +3,7 @@ import { User } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthProvider, YnFlag } from '../common/enums/domain.enums';
+import { readEnv } from '../common/env.util';
 import { ok } from '../common/dto/api-response.dto';
 import { DomainException } from '../common/errors/domain.exception';
 import { ACTIVE_DEL_YN, withActiveFilter } from '../common/soft-delete/soft-delete.util';
@@ -43,14 +44,6 @@ interface OAuthProfile {
 export class AuthService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private readEnv(name: string) {
-    const value = process.env[name]?.trim();
-    if (!value || value === 'replace-me') {
-      return undefined;
-    }
-    return value;
-  }
-
   private normalizeEmail(email: string) {
     return email.trim().toLowerCase();
   }
@@ -78,16 +71,16 @@ export class AuthService {
   }
 
   private getCallbackUrl() {
-    return this.readEnv('GOOGLE_CALLBACK_URL') ?? `${process.env.API_BASE_URL ?? 'http://localhost:3000/api'}/auth/google/callback`;
+    return readEnv('GOOGLE_CALLBACK_URL') ?? `${readEnv('API_BASE_URL') ?? 'http://localhost:3000/api'}/auth/google/callback`;
   }
 
   private getOAuthConfig(): OAuthConfig {
     return {
-      authorizeUrl: this.readEnv('GOOGLE_AUTHORIZE_URL') ?? 'https://accounts.google.com/o/oauth2/v2/auth',
-      tokenUrl: this.readEnv('GOOGLE_TOKEN_URL') ?? 'https://oauth2.googleapis.com/token',
-      userInfoUrl: this.readEnv('GOOGLE_USERINFO_URL') ?? 'https://openidconnect.googleapis.com/v1/userinfo',
-      clientId: this.readEnv('GOOGLE_CLIENT_ID'),
-      clientSecret: this.readEnv('GOOGLE_CLIENT_SECRET'),
+      authorizeUrl: readEnv('GOOGLE_AUTHORIZE_URL') ?? 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: readEnv('GOOGLE_TOKEN_URL') ?? 'https://oauth2.googleapis.com/token',
+      userInfoUrl: readEnv('GOOGLE_USERINFO_URL') ?? 'https://openidconnect.googleapis.com/v1/userinfo',
+      clientId: readEnv('GOOGLE_CLIENT_ID'),
+      clientSecret: readEnv('GOOGLE_CLIENT_SECRET'),
       callbackUrl: this.getCallbackUrl(),
       scope: 'openid profile email',
     };
@@ -277,7 +270,7 @@ export class AuthService {
     const profile = await this.fetchOAuthProfile(code);
     const user = await this.upsertOAuthUser(profile);
     const sessionToken = issueSessionToken(this.buildSessionPayload(user));
-    const frontendBaseUrl = process.env.APP_BASE_URL ?? 'http://localhost:3000';
+    const frontendBaseUrl = readEnv('APP_BASE_URL') ?? 'http://localhost:3000';
 
     return {
       sessionToken,
@@ -294,7 +287,7 @@ export class AuthService {
   async register(dto: RegisterDto) {
     const email = this.normalizeEmail(dto.email);
     const existingUser = await this.prisma.user.findFirst({
-      where: this.activeWhere({ email }),
+      where: this.activeWhere({ email, authProvider: AuthProvider.LOCAL }),
     });
 
     if (existingUser) {

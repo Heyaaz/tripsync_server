@@ -100,27 +100,19 @@ describe('TourApiService', () => {
     ]);
     placeService.needsDetailEnrichment.mockReturnValue(true);
 
+    const failResponse = { ok: false, status: 500, text: async () => 'boom' } as Response;
     const fetchMock = jest
       .spyOn(global, 'fetch' as any)
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        text: async () => 'boom',
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        text: async () => 'boom',
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        text: async () => 'boom',
-      } as Response);
+      .mockResolvedValueOnce(failResponse)
+      .mockResolvedValueOnce(failResponse)
+      .mockResolvedValueOnce(failResponse)
+      .mockResolvedValueOnce(failResponse)
+      .mockResolvedValueOnce(failResponse)
+      .mockResolvedValueOnce(failResponse);
 
     const result = await service.enrichChungnamPlaces({ isGuest: false } as any, { limit: 1 });
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     expect(placeService.enrichPlaceDetails).not.toHaveBeenCalled();
     expect(result.data).toEqual({ limit: 1, scanned: 1, queued: 1, enriched: 0, skipped: 0, failed: 1 });
 

@@ -60,7 +60,6 @@ model User {
   targetSlots      ScheduleSlot[]       @relation("SlotTargetUser")
 
   @@unique([authProvider, providerUserId], map: "uq_users_provider")
-  @@unique([email], map: "uq_users_email")
   @@index([email], map: "idx_users_email")
   @@map("users")
 }
