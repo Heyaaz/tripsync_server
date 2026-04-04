@@ -21,6 +21,7 @@ pnpm-debug.log*
 .claude/
 .codex/
 .omx/
+.omc/
 
 *.swp
 *.swo
