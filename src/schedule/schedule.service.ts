@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
 import { ok } from '../common/dto/api-response.dto';
 import { DomainException } from '../common/errors/domain.exception';
+import { readMetadataObject } from '../common/metadata.util';
 import { BaseSoftDeleteService } from '../common/soft-delete/base-soft-delete.service';
 import { ACTIVE_DEL_YN } from '../common/soft-delete/soft-delete.util';
 import {
@@ -101,6 +102,111 @@ export class ScheduleService extends BaseSoftDeleteService {
       metadataTags: place.metadataTags ?? undefined,
       operatingHours: place.operatingHours ?? undefined,
     }));
+  }
+
+  private buildMemberNicknameMap(
+    room: Awaited<ReturnType<ScheduleService['getRoomWithMembers']>>
+    | {
+        memberProfiles?: Array<{
+          userId: bigint;
+          user: { nickname: string };
+        }>;
+      },
+  ) {
+    return new Map(
+      (room.memberProfiles ?? []).map((profile) => [Number(profile.userId), profile.user.nickname] as const),
+    );
+  }
+
+  private formatCoordinate(value: unknown) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  private isDepopulationArea(metadataTags: Prisma.JsonValue | null | undefined) {
+    if (!metadataTags) {
+      return false;
+    }
+    if (Array.isArray(metadataTags)) {
+      return metadataTags.some((entry) => typeof entry === 'string' && entry === 'population_decline');
+    }
+
+    const metadata = readMetadataObject(metadataTags);
+    if (!metadata) {
+      return false;
+    }
+
+    return metadata.populationDeclineArea === true || metadata.regionType === 'population_decline';
+  }
+
+  private formatPlaceResponse(place: {
+    id: bigint | number;
+    name: string;
+    address: string;
+    category?: string | null;
+    latitude?: Prisma.Decimal | number | null;
+    longitude?: Prisma.Decimal | number | null;
+    metadataTags?: Prisma.JsonValue | null;
+  }) {
+    return {
+      id: Number(place.id),
+      name: place.name,
+      address: place.address,
+      category: place.category ?? undefined,
+      latitude: this.formatCoordinate(place.latitude),
+      longitude: this.formatCoordinate(place.longitude),
+      isDepopulationArea: this.isDepopulationArea(place.metadataTags),
+    };
+  }
+
+  private formatGeneratedOption(
+    scheduleId: number,
+    option: ScheduleOptionDraft,
+    memberNicknames: Map<number, string>,
+    placesById: Map<number, {
+      id: bigint;
+      name: string;
+      address: string;
+      category: string;
+      latitude: Prisma.Decimal | number | null;
+      longitude: Prisma.Decimal | number | null;
+      metadataTags: Prisma.JsonValue | null;
+    }>,
+  ) {
+    return {
+      scheduleId,
+      optionType: option.optionType,
+      label: option.label,
+      summary: option.summary,
+      groupSatisfaction: option.groupSatisfaction,
+      slots: option.slots.map((slot) => {
+        const place = placesById.get(slot.placeId);
+        return {
+          orderIndex: slot.orderIndex,
+          startTime: slot.startTime.toISOString(),
+          endTime: slot.endTime.toISOString(),
+          slotType: slot.slotType,
+          targetUserId: slot.targetUserId,
+          targetNickname: slot.targetUserId != null ? memberNicknames.get(slot.targetUserId) ?? null : null,
+          reasonAxis: slot.reasonAxis,
+          reason: slot.reasonText,
+          reasonText: slot.reasonText,
+          place: place
+            ? this.formatPlaceResponse(place)
+            : {
+                id: slot.placeId,
+                name: slot.placeName,
+                address: slot.placeAddress,
+                isDepopulationArea: slot.isHiddenGem,
+              },
+        };
+      }),
+      satisfactionByUser: option.satisfactionByUser.map((score) => ({
+        userId: score.userId,
+        nickname: memberNicknames.get(score.userId) ?? null,
+        score: score.score,
+      })),
+    };
   }
 
   private async createScheduleVersion(
@@ -206,6 +312,8 @@ export class ScheduleService extends BaseSoftDeleteService {
     const version = (latest?.version ?? 0) + 1;
 
     const created = await this.createScheduleVersion(room.id, version, dto, options);
+    const memberNicknames = this.buildMemberNicknameMap(room);
+    const placesById = new Map(places.map((place) => [Number(place.id), place] as const));
 
     await this.prisma.tripRoom.update({
       where: { id: room.id },
@@ -215,17 +323,7 @@ export class ScheduleService extends BaseSoftDeleteService {
     return ok({
       roomId,
       version,
-      options: created.map((entry) => ({
-        scheduleId: entry.scheduleId,
-        optionType: entry.option.optionType,
-        label: entry.option.label,
-        summary: entry.option.summary,
-        groupSatisfaction: entry.option.groupSatisfaction,
-        satisfactionByUser: entry.option.satisfactionByUser.map((score) => ({
-          userId: score.userId,
-          score: score.score,
-        })),
-      })),
+      options: created.map((entry) => this.formatGeneratedOption(entry.scheduleId, entry.option, memberNicknames, placesById)),
     });
   }
 
@@ -233,7 +331,15 @@ export class ScheduleService extends BaseSoftDeleteService {
     const schedule = await this.prisma.schedule.findFirst({
       where: this.activeWhere({ id: BigInt(scheduleId) }),
       include: {
-        room: true,
+        room: {
+          include: {
+            memberProfiles: {
+              where: this.activeWhere({}),
+              include: { user: true },
+              orderBy: { createdAt: 'asc' },
+            },
+          },
+        },
         slots: {
           where: this.activeWhere({}),
           include: { place: true },
@@ -251,10 +357,13 @@ export class ScheduleService extends BaseSoftDeleteService {
     }
 
     await this.ensureRoomMember(schedule.roomId, user.id);
+    const memberNicknames = this.buildMemberNicknameMap(schedule.room);
 
     return ok({
       id: Number(schedule.id),
       roomId: Number(schedule.roomId),
+      destination: schedule.room.destination,
+      tripDate: schedule.room.tripDate,
       version: schedule.version,
       optionType: schedule.optionType,
       isConfirmed: schedule.isConfirmed,
@@ -266,16 +375,15 @@ export class ScheduleService extends BaseSoftDeleteService {
         endTime: slot.endTime.toISOString(),
         slotType: slot.slotType,
         targetUserId: slot.targetUserId != null ? Number(slot.targetUserId) : null,
+        targetNickname: slot.targetUserId != null ? memberNicknames.get(Number(slot.targetUserId)) ?? null : null,
         reasonAxis: slot.reasonAxis,
+        reason: slot.reasonText,
         reasonText: slot.reasonText,
-        place: {
-          id: Number(slot.placeId),
-          name: slot.place.name,
-          address: slot.place.address,
-        },
+        place: this.formatPlaceResponse(slot.place),
       })),
       satisfactionByUser: schedule.satisfactionScores.map((score) => ({
         userId: Number(score.userId),
+        nickname: memberNicknames.get(Number(score.userId)) ?? null,
         score: score.score,
       })),
     });
@@ -361,6 +469,7 @@ export class ScheduleService extends BaseSoftDeleteService {
     const schedule = await this.prisma.schedule.findFirst({
       where: this.activeWhere({ id: BigInt(scheduleId) }),
       include: {
+        room: true,
         slots: {
           where: this.activeWhere({}),
           include: { place: true },
@@ -375,6 +484,8 @@ export class ScheduleService extends BaseSoftDeleteService {
 
     return ok({
       scheduleId,
+      destination: schedule.room.destination,
+      tripDate: schedule.room.tripDate,
       optionType: schedule.optionType,
       summary: schedule.summary,
       groupSatisfaction: schedule.groupSatisfaction,
@@ -383,6 +494,7 @@ export class ScheduleService extends BaseSoftDeleteService {
         startTime: slot.startTime.toISOString().slice(11, 16),
         endTime: slot.endTime.toISOString().slice(11, 16),
         placeName: slot.place.name,
+        place: this.formatPlaceResponse(slot.place),
       })),
     });
   }

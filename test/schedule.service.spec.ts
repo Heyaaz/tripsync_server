@@ -12,6 +12,9 @@ describe('ScheduleService', () => {
       findFirst: jest.fn(),
       update: jest.fn(),
     },
+    roomMember: {
+      findFirst: jest.fn(),
+    },
     place: {
       findMany: jest.fn(),
     },
@@ -63,6 +66,8 @@ describe('ScheduleService', () => {
         photoScore: 70,
         budgetScore: 35,
         themeScore: 50,
+        latitude: 36.4626,
+        longitude: 127.1194,
         metadataTags: null,
         operatingHours: { status: 'known' },
       },
@@ -146,6 +151,29 @@ describe('ScheduleService', () => {
     expect(consensusService.buildScheduleOptions).toHaveBeenCalled();
     expect(result.data?.version).toBe(1);
     expect(result.data?.options).toHaveLength(3);
+    expect(result.data?.options[0]).toMatchObject({
+      scheduleId: 5001,
+      optionType: ScheduleOptionType.BALANCED,
+      slots: [
+        {
+          orderIndex: 1,
+          targetNickname: null,
+          reason: '그룹 공통 지대 반영',
+          place: {
+            id: 101,
+            name: '공산성',
+            address: '충남 공주',
+            latitude: 36.4626,
+            longitude: 127.1194,
+            isDepopulationArea: false,
+          },
+        },
+      ],
+      satisfactionByUser: [
+        { userId: 1, nickname: '민지', score: 72 },
+        { userId: 2, nickname: '지훈', score: 68 },
+      ],
+    });
     expect(prisma.tripRoom.update).toHaveBeenCalledWith({
       where: { id: BigInt(10) },
       data: { status: TripRoomStatus.COMPLETED },
@@ -183,5 +211,62 @@ describe('ScheduleService', () => {
       data: { isConfirmed: false },
     });
     expect(prisma.schedule.update).toHaveBeenCalled();
+  });
+
+  it('includes room summary and place coordinates in public share responses', async () => {
+    prisma.schedule.findFirst.mockResolvedValue({
+      id: BigInt(7001),
+      optionType: ScheduleOptionType.BALANCED,
+      summary: '모두가 조금씩 만족하는 일정',
+      groupSatisfaction: 74,
+      room: {
+        destination: '충남',
+        tripDate: '2026-05-02',
+      },
+      slots: [
+        {
+          orderIndex: 1,
+          startTime: new Date('2026-05-02T09:00:00+09:00'),
+          endTime: new Date('2026-05-02T11:00:00+09:00'),
+          place: {
+            id: BigInt(101),
+            name: '공산성',
+            address: '충남 공주',
+            category: 'history',
+            latitude: 36.4626,
+            longitude: 127.1194,
+            metadataTags: null,
+          },
+        },
+      ],
+    });
+
+    const result = await service.getPublicShareSchedule(7001);
+
+    expect(result.data).toEqual({
+      scheduleId: 7001,
+      destination: '충남',
+      tripDate: '2026-05-02',
+      optionType: ScheduleOptionType.BALANCED,
+      summary: '모두가 조금씩 만족하는 일정',
+      groupSatisfaction: 74,
+      slots: [
+        {
+          orderIndex: 1,
+          startTime: '00:00',
+          endTime: '02:00',
+          placeName: '공산성',
+          place: {
+            id: 101,
+            name: '공산성',
+            address: '충남 공주',
+            category: 'history',
+            latitude: 36.4626,
+            longitude: 127.1194,
+            isDepopulationArea: false,
+          },
+        },
+      ],
+    });
   });
 });

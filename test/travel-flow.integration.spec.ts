@@ -21,6 +21,8 @@ function createPlaces(): Array<{
   name: string;
   address: string;
   category: string;
+  latitude: number;
+  longitude: number;
   mobilityScore: number;
   photoScore: number;
   budgetScore: number;
@@ -35,6 +37,8 @@ function createPlaces(): Array<{
       name: '공산성',
       address: '충남 공주',
       category: 'tourist_attraction',
+      latitude: 36.4626,
+      longitude: 127.1194,
       mobilityScore: 88,
       photoScore: 70,
       budgetScore: 35,
@@ -47,6 +51,8 @@ function createPlaces(): Array<{
       name: '외암민속마을',
       address: '충남 아산',
       category: 'tourist_attraction',
+      latitude: 36.7291,
+      longitude: 126.9862,
       mobilityScore: 52,
       photoScore: 78,
       budgetScore: 45,
@@ -59,6 +65,8 @@ function createPlaces(): Array<{
       name: '향토식당',
       address: '충남 공주',
       category: 'restaurant',
+      latitude: 36.4554,
+      longitude: 127.1248,
       mobilityScore: 45,
       photoScore: 52,
       budgetScore: 48,
@@ -74,6 +82,8 @@ function createPlaces(): Array<{
       name: '뷰맛집 카페',
       address: '충남 태안',
       category: 'restaurant',
+      latitude: 36.5035,
+      longitude: 126.3381,
       mobilityScore: 44,
       photoScore: 72,
       budgetScore: 52,
@@ -89,6 +99,8 @@ function createPlaces(): Array<{
       name: '천리포수목원',
       address: '충남 태안',
       category: 'tourist_attraction',
+      latitude: 36.7993,
+      longitude: 126.1459,
       mobilityScore: 45,
       photoScore: 75,
       budgetScore: 42,
@@ -101,6 +113,8 @@ function createPlaces(): Array<{
       name: '전통시장',
       address: '충남 공주',
       category: 'shopping',
+      latitude: 36.4568,
+      longitude: 127.1197,
       mobilityScore: 55,
       photoScore: 57,
       budgetScore: 70,
@@ -113,6 +127,8 @@ function createPlaces(): Array<{
       name: '민속 박물관',
       address: '충남 공주',
       category: 'cultural_facility',
+      latitude: 36.4645,
+      longitude: 127.1083,
       mobilityScore: 43,
       photoScore: 55,
       budgetScore: 40,
@@ -465,6 +481,10 @@ describe('Travel flow integration', () => {
       ScheduleOptionType.INDIVIDUAL,
       ScheduleOptionType.DISCOVERY,
     ]);
+    expect(generated.data?.options[0]?.slots?.[0]?.place).toMatchObject({
+      latitude: expect.any(Number),
+      longitude: expect.any(Number),
+    });
 
     const confirmed = await scheduleService.confirmSchedule(
       roomId,
