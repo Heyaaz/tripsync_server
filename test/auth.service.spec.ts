@@ -111,10 +111,22 @@ describe('AuthService', () => {
     expect(result.redirectUrl).toContain(encodeURIComponent('http://localhost:3000/api/auth/google/callback'));
   });
 
+  it('builds kakao oauth redirect url with required scopes', () => {
+    process.env.KAKAO_CLIENT_ID = 'kakao-client';
+    process.env.KAKAO_CALLBACK_URL = 'http://localhost:3000/api/auth/kakao/callback';
+
+    const result = service.getOAuthRedirect(AuthProvider.KAKAO, '/rooms/new');
+
+    expect(result.redirectUrl).toContain('kauth.kakao.com/oauth/authorize');
+    expect(result.redirectUrl).not.toContain('scope=');
+    expect(result.redirectUrl).toContain(encodeURIComponent('http://localhost:3000/api/auth/kakao/callback'));
+  });
+
   it('falls back to local google identity when provider credentials are not configured', async () => {
     delete process.env.GOOGLE_CLIENT_ID;
     delete process.env.GOOGLE_CLIENT_SECRET;
     delete process.env.GOOGLE_CALLBACK_URL;
+    process.env.FRONTEND_BASE_URL = 'http://localhost:3001';
     prisma.user.upsert.mockResolvedValue({
       id: BigInt(1),
       nickname: 'google-host',
@@ -137,7 +149,7 @@ describe('AuthService', () => {
       }),
     );
     expect(result.user.nickname).toBe('google-host');
-    expect(result.redirectUrl).toContain('/rooms/new?login=success');
+    expect(result.redirectUrl).toBe('http://localhost:3001/rooms/new?login=success&provider=google');
   });
 
   it('exchanges google oauth code and upserts provider profile', async () => {
@@ -191,6 +203,97 @@ describe('AuthService', () => {
       }),
     );
     expect(result.user.authProvider).toBe(AuthProvider.GOOGLE);
+
+    fetchMock.mockRestore();
+  });
+
+  it('falls back to local kakao identity when provider credentials are not configured', async () => {
+    delete process.env.KAKAO_CLIENT_ID;
+    delete process.env.KAKAO_CLIENT_SECRET;
+    delete process.env.KAKAO_CALLBACK_URL;
+    process.env.FRONTEND_BASE_URL = 'http://localhost:3001';
+    prisma.user.upsert.mockResolvedValue({
+      id: BigInt(5),
+      nickname: 'kakao-host',
+      authProvider: AuthProvider.KAKAO,
+      isGuest: false,
+    });
+
+    const result = await service.handleOAuthCallback(
+      AuthProvider.KAKAO,
+      { code: 'local-kakao-code', state: 'state|/rooms/new' },
+      'ts_oauth_state=state',
+    );
+
+    expect(prisma.user.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          providerUserId: 'local-kakao-code',
+          nickname: 'kakao-host',
+          authProvider: AuthProvider.KAKAO,
+        }),
+      }),
+    );
+    expect(result.user.authProvider).toBe(AuthProvider.KAKAO);
+    expect(result.redirectUrl).toBe('http://localhost:3001/rooms/new?login=success&provider=kakao');
+  });
+
+  it('exchanges kakao oauth code and upserts provider profile', async () => {
+    process.env.KAKAO_CLIENT_ID = 'kakao-client';
+    process.env.KAKAO_CLIENT_SECRET = 'kakao-secret';
+    process.env.KAKAO_CALLBACK_URL = 'http://localhost:3000/api/auth/kakao/callback';
+
+    const fetchMock = jest
+      .spyOn(global, 'fetch' as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: 'kakao-access-token' }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: 123456789,
+          kakao_account: {
+            email: 'trip@kakao.com',
+            profile: {
+              nickname: '카카오여행자',
+              profile_image_url: 'https://example.com/kakao-profile.png',
+            },
+          },
+        }),
+      } as Response);
+
+    prisma.user.upsert.mockResolvedValue({
+      id: BigInt(6),
+      nickname: '카카오여행자',
+      authProvider: AuthProvider.KAKAO,
+      isGuest: false,
+    });
+
+    const result = await service.handleOAuthCallback(
+      AuthProvider.KAKAO,
+      { code: 'oauth-code', state: 'state|/rooms/new' },
+      'ts_oauth_state=state',
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(prisma.user.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          authProvider_providerUserId: {
+            authProvider: AuthProvider.KAKAO,
+            providerUserId: '123456789',
+          },
+        },
+        create: expect.objectContaining({
+          nickname: '카카오여행자',
+          email: 'trip@kakao.com',
+          profileImageUrl: 'https://example.com/kakao-profile.png',
+          authProvider: AuthProvider.KAKAO,
+        }),
+      }),
+    );
+    expect(result.user.authProvider).toBe(AuthProvider.KAKAO);
 
     fetchMock.mockRestore();
   });

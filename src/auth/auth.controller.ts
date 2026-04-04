@@ -47,6 +47,13 @@ export class AuthController {
     return res.redirect(302, redirect.redirectUrl);
   }
 
+  @Get('kakao')
+  getKakaoOAuthRedirect(@Query('redirectPath') redirectPath: string | undefined, @Res() res: any) {
+    const redirect = this.authService.getOAuthRedirect(AuthProvider.KAKAO, redirectPath);
+    res.setHeader('Set-Cookie', buildCookieHeader(getOauthStateCookieName(), redirect.state, 600));
+    return res.redirect(302, redirect.redirectUrl);
+  }
+
   @Get('google/callback')
   async handleGoogleCallback(
     @Query() query: Record<string, string | undefined>,
@@ -54,6 +61,20 @@ export class AuthController {
     @Res() res: any,
   ) {
     const result = await this.authService.handleOAuthCallback(AuthProvider.GOOGLE, query, cookieHeader);
+    res.setHeader('Set-Cookie', [
+      buildCookieHeader(getSessionCookieName(), result.sessionToken, 60 * 60 * 24 * 7),
+      buildExpiredCookieHeader(getOauthStateCookieName()),
+    ]);
+    return res.redirect(302, result.redirectUrl);
+  }
+
+  @Get('kakao/callback')
+  async handleKakaoCallback(
+    @Query() query: Record<string, string | undefined>,
+    @Headers('cookie') cookieHeader: string | undefined,
+    @Res() res: any,
+  ) {
+    const result = await this.authService.handleOAuthCallback(AuthProvider.KAKAO, query, cookieHeader);
     res.setHeader('Set-Cookie', [
       buildCookieHeader(getSessionCookieName(), result.sessionToken, 60 * 60 * 24 * 7),
       buildExpiredCookieHeader(getOauthStateCookieName()),

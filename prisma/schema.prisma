@@ -13,6 +13,7 @@ enum YnFlag {
 }
 
 enum AuthProvider {
+  kakao
   google
   local
   guest
