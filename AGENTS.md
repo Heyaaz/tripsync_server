@@ -12,6 +12,7 @@ Follow the repository root `AGENTS.md`, then apply the rules below for work insi
 - Use the commit subject format `type: summary` with skill-aligned prefixes such as `feat:`, `fix:`, `chore:`, `docs:`, `ref:`, `style:`, or `test:`.
 - Keep the commit message to a simple single-line subject unless the user explicitly asks for more detail.
 - Avoid `git add .`; stage only the intended backend files explicitly.
+- Write commit messages in Korean.
 
 ## Shared Docs
 - Consult the relevant shared docs in `../docs/` before backend planning, implementation, or documentation updates.
