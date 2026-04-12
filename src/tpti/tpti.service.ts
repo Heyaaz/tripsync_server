@@ -1,7 +1,6 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { User } from '@prisma/client';
 import { Prisma } from '@prisma/client';
-import { AuthService } from '../auth/auth.service';
 import { readEnv } from '../common/env.util';
 import { ok } from '../common/dto/api-response.dto';
 import { DomainException } from '../common/errors/domain.exception';
@@ -30,10 +29,7 @@ const QUESTIONS: QuestionDefinition[] = [
 
 @Injectable()
 export class TptiService extends BaseSoftDeleteService {
-  constructor(
-    private readonly authService: AuthService,
-    private readonly prisma: PrismaService,
-  ) {
+  constructor(private readonly prisma: PrismaService) {
     super();
   }
 

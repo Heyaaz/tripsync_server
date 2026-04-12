@@ -3,6 +3,7 @@ import { User } from '@prisma/client';
 import { TripRoomStatus, RoomMemberRole, YnFlag } from '../common/enums/domain.enums';
 import { ok } from '../common/dto/api-response.dto';
 import { DomainException } from '../common/errors/domain.exception';
+import { findActiveRoomById, requireActiveRoomMember } from '../common/room-access.util';
 import { BaseSoftDeleteService } from '../common/soft-delete/base-soft-delete.service';
 import { ACTIVE_DEL_YN } from '../common/soft-delete/soft-delete.util';
 import { AuthService } from '../auth/auth.service';
@@ -20,18 +21,19 @@ export class RoomService extends BaseSoftDeleteService {
   }
 
   private async requireRoomMember(roomId: bigint, userId: bigint) {
-    const membership = await this.prisma.roomMember.findFirst({
-      where: this.activeWhere({ roomId, userId }),
+    await requireActiveRoomMember({
+      prisma: this.prisma,
+      activeWhere: this.activeWhere.bind(this),
+      roomId,
+      userId,
     });
-
-    if (!membership) {
-      throw new DomainException(HttpStatus.FORBIDDEN, 'FORBIDDEN', '방 멤버만 접근할 수 있습니다.');
-    }
   }
 
   private async getActiveRoomById(roomId: bigint) {
-    const room = await this.prisma.tripRoom.findFirst({
-      where: this.activeWhere({ id: roomId }),
+    return findActiveRoomById({
+      prisma: this.prisma,
+      activeWhere: this.activeWhere.bind(this),
+      roomId,
       include: {
         hostUser: true,
         members: {
@@ -44,12 +46,6 @@ export class RoomService extends BaseSoftDeleteService {
         },
       },
     });
-
-    if (!room) {
-      throw new DomainException(HttpStatus.NOT_FOUND, 'ROOM_NOT_FOUND', '존재하지 않는 여행 방입니다.');
-    }
-
-    return room;
   }
 
   private async getActiveRoomByShareCode(shareCode: string) {
@@ -73,6 +69,23 @@ export class RoomService extends BaseSoftDeleteService {
   private generateShareCode() {
     const suffix = Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
     return `CNAM${new Date().getFullYear().toString().slice(-2)}${suffix}`;
+  }
+
+  private buildRoomMemberProfileSnapshot(result: {
+    mobilityScore: number;
+    photoScore: number;
+    budgetScore: number;
+    themeScore: number;
+    characterName: string;
+  }) {
+    return {
+      mobilityScore: result.mobilityScore,
+      photoScore: result.photoScore,
+      budgetScore: result.budgetScore,
+      themeScore: result.themeScore,
+      characterName: result.characterName,
+      delYn: ACTIVE_DEL_YN,
+    };
   }
 
   private async refreshRoomStatus(roomId: bigint) {
@@ -174,23 +187,13 @@ export class RoomService extends BaseSoftDeleteService {
         },
         update: {
           tptiResultId: result.id,
-          mobilityScore: result.mobilityScore,
-          photoScore: result.photoScore,
-          budgetScore: result.budgetScore,
-          themeScore: result.themeScore,
-          characterName: result.characterName,
-          delYn: ACTIVE_DEL_YN,
+          ...this.buildRoomMemberProfileSnapshot(result),
         },
         create: {
           roomId: room.id,
           userId: user.id,
           tptiResultId: result.id,
-          mobilityScore: result.mobilityScore,
-          photoScore: result.photoScore,
-          budgetScore: result.budgetScore,
-          themeScore: result.themeScore,
-          characterName: result.characterName,
-          delYn: ACTIVE_DEL_YN,
+          ...this.buildRoomMemberProfileSnapshot(result),
         },
       });
     }

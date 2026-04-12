@@ -1,5 +1,7 @@
 import { ScheduleService } from '../src/schedule/schedule.service';
+import { HttpStatus } from '@nestjs/common';
 import { ScheduleOptionType, TripRoomStatus } from '../src/common/enums/domain.enums';
+import { DomainException } from '../src/common/errors/domain.exception';
 
 describe('ScheduleService', () => {
   const authService = {
@@ -180,6 +182,37 @@ describe('ScheduleService', () => {
     });
   });
 
+  it('returns room-not-found when generating a schedule for a missing room', async () => {
+    prisma.tripRoom.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.generateSchedule(
+        999,
+        {
+          destination: '충남',
+          tripDate: '2026-05-02',
+          startTime: '09:00',
+          endTime: '21:00',
+        },
+        { id: BigInt(1), isGuest: false } as any,
+      ),
+    ).rejects.toBeInstanceOf(DomainException);
+
+    await service.generateSchedule(
+      999,
+      {
+        destination: '충남',
+        tripDate: '2026-05-02',
+        startTime: '09:00',
+        endTime: '21:00',
+      },
+      { id: BigInt(1), isGuest: false } as any,
+    ).catch((error: DomainException) => {
+      expect(error.getStatus()).toBe(HttpStatus.NOT_FOUND);
+      expect(error.getResponse()).toMatchObject({ code: 'ROOM_NOT_FOUND' });
+    });
+  });
+
   it('confirms the selected latest option', async () => {
     prisma.tripRoom.findFirst.mockResolvedValue({
       id: BigInt(10),
@@ -266,6 +299,109 @@ describe('ScheduleService', () => {
             isDepopulationArea: false,
           },
         },
+      ],
+    });
+  });
+
+  it('rejects schedule detail access for non-members', async () => {
+    prisma.schedule.findFirst.mockResolvedValue({
+      id: BigInt(8001),
+      roomId: BigInt(10),
+      room: {
+        destination: '충남',
+        tripDate: '2026-05-02',
+        memberProfiles: [],
+      },
+      slots: [],
+      satisfactionScores: [],
+      version: 1,
+      optionType: ScheduleOptionType.BALANCED,
+      isConfirmed: false,
+      groupSatisfaction: 70,
+      summary: '요약',
+    });
+    prisma.roomMember.findFirst.mockResolvedValue(null);
+
+    await expect(service.getSchedule(8001, { id: BigInt(2) } as any)).rejects.toBeInstanceOf(DomainException);
+    await service.getSchedule(8001, { id: BigInt(2) } as any).catch((error: DomainException) => {
+      expect(error.getStatus()).toBe(HttpStatus.FORBIDDEN);
+      expect(error.getResponse()).toMatchObject({ code: 'FORBIDDEN' });
+    });
+  });
+
+  it('keeps getSchedule slot and satisfaction mapping aligned with generated option responses', async () => {
+    prisma.schedule.findFirst.mockResolvedValue({
+      id: BigInt(8101),
+      roomId: BigInt(10),
+      room: {
+        destination: '충남',
+        tripDate: '2026-05-02',
+        memberProfiles: [
+          { userId: BigInt(1), user: { nickname: '민지' } },
+          { userId: BigInt(2), user: { nickname: '지훈' } },
+        ],
+      },
+      slots: [
+        {
+          orderIndex: 1,
+          startTime: new Date('2026-05-02T09:00:00+09:00'),
+          endTime: new Date('2026-05-02T11:00:00+09:00'),
+          slotType: 'individual',
+          targetUserId: BigInt(2),
+          reasonAxis: 'mobility',
+          reasonText: '지훈 우선 슬롯',
+          place: {
+            id: BigInt(101),
+            name: '공산성',
+            address: '충남 공주',
+            category: 'history',
+            latitude: 36.4626,
+            longitude: 127.1194,
+            metadataTags: null,
+          },
+        },
+      ],
+      satisfactionScores: [
+        { userId: BigInt(1), score: 72 },
+        { userId: BigInt(2), score: 68 },
+      ],
+      version: 2,
+      optionType: ScheduleOptionType.BALANCED,
+      isConfirmed: true,
+      groupSatisfaction: 70,
+      summary: '요약',
+    });
+    prisma.roomMember.findFirst.mockResolvedValue({ id: BigInt(1), roomId: BigInt(10), userId: BigInt(1) });
+
+    const result = await service.getSchedule(8101, { id: BigInt(1) } as any);
+
+    expect(result.data).toMatchObject({
+      id: 8101,
+      roomId: 10,
+      destination: '충남',
+      optionType: ScheduleOptionType.BALANCED,
+      slots: [
+        {
+          orderIndex: 1,
+          targetUserId: 2,
+          targetNickname: '지훈',
+          reasonAxis: 'mobility',
+          reason: '지훈 우선 슬롯',
+          reasonText: '지훈 우선 슬롯',
+          place: {
+            id: 101,
+            name: '공산성',
+            address: '충남 공주',
+            category: 'history',
+            latitude: 36.4626,
+            longitude: 127.1194,
+            isDepopulationArea: false,
+          },
+        },
+      ],
+      satisfactionByUser: [
+        { userId: 1, nickname: '민지', score: 72 },
+        { userId: 2, nickname: '지훈', score: 68 },
       ],
     });
   });

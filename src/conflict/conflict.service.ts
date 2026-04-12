@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
 import { ok } from '../common/dto/api-response.dto';
 import { DomainException } from '../common/errors/domain.exception';
+import { findActiveRoomById, requireActiveRoomMember } from '../common/room-access.util';
 import { BaseSoftDeleteService } from '../common/soft-delete/base-soft-delete.service';
 import { ACTIVE_DEL_YN } from '../common/soft-delete/soft-delete.util';
 import { ConsensusService } from '../consensus/consensus.service';
@@ -20,20 +21,21 @@ export class ConflictService extends BaseSoftDeleteService {
   }
 
   private async requireRoomMember(roomId: bigint, userId: bigint) {
-    const membership = await this.prisma.roomMember.findFirst({
-      where: this.activeWhere({ roomId, userId }),
+    await requireActiveRoomMember({
+      prisma: this.prisma,
+      activeWhere: this.activeWhere.bind(this),
+      roomId,
+      userId,
     });
-
-    if (!membership) {
-      throw new DomainException(HttpStatus.FORBIDDEN, 'FORBIDDEN', '방 멤버만 접근할 수 있습니다.');
-    }
   }
 
   async getConflictMap(roomId: number, user: User) {
     await this.requireRoomMember(BigInt(roomId), user.id);
 
-    const room = await this.prisma.tripRoom.findFirst({
-      where: this.activeWhere({ id: BigInt(roomId) }),
+    const room = await findActiveRoomById({
+      prisma: this.prisma,
+      activeWhere: this.activeWhere.bind(this),
+      roomId: BigInt(roomId),
       include: {
         memberProfiles: {
           where: this.activeWhere({}),
@@ -42,10 +44,6 @@ export class ConflictService extends BaseSoftDeleteService {
         },
       },
     });
-
-    if (!room) {
-      throw new DomainException(HttpStatus.NOT_FOUND, 'ROOM_NOT_FOUND', '존재하지 않는 여행 방입니다.');
-    }
     if (room.memberProfiles.length < 2) {
       throw new DomainException(HttpStatus.UNPROCESSABLE_ENTITY, 'ROOM_NOT_READY', '갈등 지도를 계산할 프로필이 부족합니다.');
     }

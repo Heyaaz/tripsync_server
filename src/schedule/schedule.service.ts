@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
 import { ok } from '../common/dto/api-response.dto';
 import { DomainException } from '../common/errors/domain.exception';
+import { findActiveRoomById, requireActiveRoomMember } from '../common/room-access.util';
 import { readMetadataObject } from '../common/metadata.util';
 import { BaseSoftDeleteService } from '../common/soft-delete/base-soft-delete.service';
 import { ACTIVE_DEL_YN } from '../common/soft-delete/soft-delete.util';
@@ -31,8 +32,10 @@ export class ScheduleService extends BaseSoftDeleteService {
   }
 
   private async getRoomWithMembers(roomId: number) {
-    const room = await this.prisma.tripRoom.findFirst({
-      where: this.activeWhere({ id: BigInt(roomId) }),
+    return findActiveRoomById({
+      prisma: this.prisma,
+      activeWhere: this.activeWhere.bind(this),
+      roomId: BigInt(roomId),
       include: {
         members: {
           where: this.activeWhere({}),
@@ -46,22 +49,15 @@ export class ScheduleService extends BaseSoftDeleteService {
         },
       },
     });
-
-    if (!room) {
-      throw new DomainException(HttpStatus.NOT_FOUND, 'ROOM_NOT_FOUND', '존재하지 않는 여행 방입니다.');
-    }
-
-    return room;
   }
 
   private async ensureRoomMember(roomId: bigint, userId: bigint) {
-    const membership = await this.prisma.roomMember.findFirst({
-      where: this.activeWhere({ roomId, userId }),
+    await requireActiveRoomMember({
+      prisma: this.prisma,
+      activeWhere: this.activeWhere.bind(this),
+      roomId,
+      userId,
     });
-
-    if (!membership) {
-      throw new DomainException(HttpStatus.FORBIDDEN, 'FORBIDDEN', '방 멤버만 접근할 수 있습니다.');
-    }
   }
 
   private mapMembers(room: Awaited<ReturnType<ScheduleService['getRoomWithMembers']>>): MemberSnapshot[] {
@@ -113,7 +109,7 @@ export class ScheduleService extends BaseSoftDeleteService {
         }>;
       },
   ) {
-    return new Map(
+    return new Map<number, string>(
       (room.memberProfiles ?? []).map((profile) => [Number(profile.userId), profile.user.nickname] as const),
     );
   }
@@ -159,6 +155,109 @@ export class ScheduleService extends BaseSoftDeleteService {
     };
   }
 
+  private formatTargetUser(
+    targetUserId: bigint | number | null | undefined,
+    memberNicknames: Map<number, string>,
+  ) {
+    const normalizedTargetUserId = targetUserId != null ? Number(targetUserId) : null;
+
+    return {
+      targetUserId: normalizedTargetUserId,
+      targetNickname: normalizedTargetUserId != null ? memberNicknames.get(normalizedTargetUserId) ?? null : null,
+    };
+  }
+
+  private formatSatisfactionByUser(
+    satisfactionScores: Array<{
+      userId: bigint | number;
+      score: number;
+    }>,
+    memberNicknames: Map<number, string>,
+  ) {
+    return satisfactionScores.map((score) => {
+      const userId = Number(score.userId);
+      return {
+        userId,
+        nickname: memberNicknames.get(userId) ?? null,
+        score: score.score,
+      };
+    });
+  }
+
+  private formatStoredScheduleSlot(
+    slot: {
+      orderIndex: number;
+      startTime: Date;
+      endTime: Date;
+      slotType: string;
+      targetUserId: bigint | null;
+      reasonAxis: string | null;
+      reasonText: string | null;
+      place: {
+        id: bigint;
+        name: string;
+        address: string;
+        category?: string | null;
+        latitude?: Prisma.Decimal | number | null;
+        longitude?: Prisma.Decimal | number | null;
+        metadataTags?: Prisma.JsonValue | null;
+      };
+    },
+    memberNicknames: Map<number, string>,
+  ) {
+    const targetUser = this.formatTargetUser(slot.targetUserId, memberNicknames);
+
+    return {
+      orderIndex: slot.orderIndex,
+      startTime: slot.startTime.toISOString(),
+      endTime: slot.endTime.toISOString(),
+      slotType: slot.slotType,
+      targetUserId: targetUser.targetUserId,
+      targetNickname: targetUser.targetNickname,
+      reasonAxis: slot.reasonAxis,
+      reason: slot.reasonText,
+      reasonText: slot.reasonText,
+      place: this.formatPlaceResponse(slot.place),
+    };
+  }
+
+  private formatGeneratedScheduleSlot(
+    slot: ScheduleOptionDraft['slots'][number],
+    memberNicknames: Map<number, string>,
+    placesById: Map<number, {
+      id: bigint;
+      name: string;
+      address: string;
+      category: string;
+      latitude: Prisma.Decimal | number | null;
+      longitude: Prisma.Decimal | number | null;
+      metadataTags: Prisma.JsonValue | null;
+    }>,
+  ) {
+    const place = placesById.get(slot.placeId);
+    const targetUser = this.formatTargetUser(slot.targetUserId, memberNicknames);
+
+    return {
+      orderIndex: slot.orderIndex,
+      startTime: slot.startTime.toISOString(),
+      endTime: slot.endTime.toISOString(),
+      slotType: slot.slotType,
+      targetUserId: targetUser.targetUserId,
+      targetNickname: targetUser.targetNickname,
+      reasonAxis: slot.reasonAxis,
+      reason: slot.reasonText,
+      reasonText: slot.reasonText,
+      place: place
+        ? this.formatPlaceResponse(place)
+        : {
+            id: slot.placeId,
+            name: slot.placeName,
+            address: slot.placeAddress,
+            isDepopulationArea: slot.isHiddenGem,
+          },
+    };
+  }
+
   private formatGeneratedOption(
     scheduleId: number,
     option: ScheduleOptionDraft,
@@ -179,33 +278,8 @@ export class ScheduleService extends BaseSoftDeleteService {
       label: option.label,
       summary: option.summary,
       groupSatisfaction: option.groupSatisfaction,
-      slots: option.slots.map((slot) => {
-        const place = placesById.get(slot.placeId);
-        return {
-          orderIndex: slot.orderIndex,
-          startTime: slot.startTime.toISOString(),
-          endTime: slot.endTime.toISOString(),
-          slotType: slot.slotType,
-          targetUserId: slot.targetUserId,
-          targetNickname: slot.targetUserId != null ? memberNicknames.get(slot.targetUserId) ?? null : null,
-          reasonAxis: slot.reasonAxis,
-          reason: slot.reasonText,
-          reasonText: slot.reasonText,
-          place: place
-            ? this.formatPlaceResponse(place)
-            : {
-                id: slot.placeId,
-                name: slot.placeName,
-                address: slot.placeAddress,
-                isDepopulationArea: slot.isHiddenGem,
-              },
-        };
-      }),
-      satisfactionByUser: option.satisfactionByUser.map((score) => ({
-        userId: score.userId,
-        nickname: memberNicknames.get(score.userId) ?? null,
-        score: score.score,
-      })),
+      slots: option.slots.map((slot) => this.formatGeneratedScheduleSlot(slot, memberNicknames, placesById)),
+      satisfactionByUser: this.formatSatisfactionByUser(option.satisfactionByUser, memberNicknames),
     };
   }
 
@@ -369,23 +443,8 @@ export class ScheduleService extends BaseSoftDeleteService {
       isConfirmed: schedule.isConfirmed,
       groupSatisfaction: schedule.groupSatisfaction,
       summary: schedule.summary,
-      slots: schedule.slots.map((slot) => ({
-        orderIndex: slot.orderIndex,
-        startTime: slot.startTime.toISOString(),
-        endTime: slot.endTime.toISOString(),
-        slotType: slot.slotType,
-        targetUserId: slot.targetUserId != null ? Number(slot.targetUserId) : null,
-        targetNickname: slot.targetUserId != null ? memberNicknames.get(Number(slot.targetUserId)) ?? null : null,
-        reasonAxis: slot.reasonAxis,
-        reason: slot.reasonText,
-        reasonText: slot.reasonText,
-        place: this.formatPlaceResponse(slot.place),
-      })),
-      satisfactionByUser: schedule.satisfactionScores.map((score) => ({
-        userId: Number(score.userId),
-        nickname: memberNicknames.get(Number(score.userId)) ?? null,
-        score: score.score,
-      })),
+      slots: schedule.slots.map((slot) => this.formatStoredScheduleSlot(slot, memberNicknames)),
+      satisfactionByUser: this.formatSatisfactionByUser(schedule.satisfactionScores, memberNicknames),
     });
   }
 

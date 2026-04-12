@@ -430,11 +430,42 @@ describe('Travel flow integration', () => {
     jest.clearAllMocks();
   });
 
+  it('keeps room join idempotent while refreshing the stored TPTI snapshot', async () => {
+    const { prisma, state } = createPrismaStub(users);
+    const roomService = new RoomService(authService as any, prisma as any);
+    const tptiService = new TptiService(prisma as any);
+
+    const createRoomResult = await roomService.createRoom(
+      {
+        destination: '충남',
+        tripDate: '2026-05-02',
+      },
+      users[0] as any,
+    );
+
+    const shareCode = createRoomResult.data!.shareCode;
+    const firstTpti = await tptiService.submitResult({ answers: [5, 1, 4, 2, 2, 4, 3, 4] }, users[0] as any);
+    const secondTpti = await tptiService.submitResult({ answers: [1, 5, 2, 4, 4, 2, 5, 1] }, users[0] as any);
+
+    await roomService.joinRoom(shareCode, { tptiResultId: firstTpti.data!.resultId }, users[0] as any);
+    await roomService.joinRoom(shareCode, { tptiResultId: secondTpti.data!.resultId }, users[0] as any);
+
+    expect(state.roomMembers).toHaveLength(1);
+    expect(state.roomMemberProfiles).toHaveLength(1);
+    expect(state.roomMemberProfiles[0]).toMatchObject({
+      roomId: BigInt(createRoomResult.data!.roomId),
+      userId: users[0]!.id,
+      tptiResultId: BigInt(secondTpti.data!.resultId),
+      delYn: ACTIVE_DEL_YN,
+    });
+    expect(state.tripRooms[0]?.status).toBe(TripRoomStatus.WAITING);
+  });
+
   it('runs room creation, TPTI, conflict map, schedule generation, and confirmation in one flow', async () => {
     const { prisma, state } = createPrismaStub(users);
     const consensusService = new ConsensusService({ refineScheduleOption: jest.fn().mockResolvedValue(null) } as any);
     const roomService = new RoomService(authService as any, prisma as any);
-    const tptiService = new TptiService(authService as any, prisma as any);
+    const tptiService = new TptiService(prisma as any);
     const conflictService = new ConflictService(authService as any, consensusService, prisma as any);
     const scheduleService = new ScheduleService(authService as any, consensusService, prisma as any);
 
