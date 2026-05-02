@@ -162,6 +162,7 @@ model Schedule {
   generationInput    Json                 @map("generation_input")
   summary            String?              @db.Text
   groupSatisfaction  Int                  @map("group_satisfaction") @db.UnsignedTinyInt
+  personaValidation  Json?                @map("persona_validation")
   llmProvider        String?              @map("llm_provider") @db.VarChar(50)
   delYn              YnFlag               @default(N) @map("del_yn")
   createdAt          DateTime             @default(now()) @map("created_at")
