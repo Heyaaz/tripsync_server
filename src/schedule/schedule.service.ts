@@ -17,6 +17,8 @@ import {
 } from '../consensus/consensus.service';
 import { ScheduleOptionType, TripRoomStatus } from '../common/enums/domain.enums';
 import { PrismaService } from '../prisma/prisma.service';
+import { PersonaValidationService } from '../persona-validation/persona-validation.service';
+import { PersonaValidationResult } from '../persona-validation/dto/persona-validation-result.dto';
 import { ConfirmScheduleDto } from './dto/confirm-schedule.dto';
 import { GenerateScheduleDto } from './dto/generate-schedule.dto';
 import { RegenerateScheduleDto } from './dto/regenerate-schedule.dto';
@@ -26,6 +28,7 @@ export class ScheduleService extends BaseSoftDeleteService {
   constructor(
     private readonly authService: AuthService,
     private readonly consensusService: ConsensusService,
+    private readonly personaValidationService: PersonaValidationService,
     private readonly prisma: PrismaService,
   ) {
     super();
@@ -278,6 +281,7 @@ export class ScheduleService extends BaseSoftDeleteService {
       label: option.label,
       summary: option.summary,
       groupSatisfaction: option.groupSatisfaction,
+      personaValidation: (option as any).personaValidation ?? null,
       slots: option.slots.map((slot) => this.formatGeneratedScheduleSlot(slot, memberNicknames, placesById)),
       satisfactionByUser: this.formatSatisfactionByUser(option.satisfactionByUser, memberNicknames),
     };
@@ -287,10 +291,10 @@ export class ScheduleService extends BaseSoftDeleteService {
     roomId: bigint,
     version: number,
     input: GenerateScheduleDto,
-    options: ScheduleOptionDraft[],
+    options: Array<ScheduleOptionDraft & { personaValidation?: any }>,
   ) {
     const created = await this.prisma.$transaction(async (tx) => {
-      const output: Array<{ scheduleId: number; option: ScheduleOptionDraft }> = [];
+      const output: Array<{ scheduleId: number; option: ScheduleOptionDraft & { personaValidation?: any } }> = [];
 
       for (const option of options) {
         const schedule = await tx.schedule.create({
@@ -307,6 +311,9 @@ export class ScheduleService extends BaseSoftDeleteService {
             } as Prisma.InputJsonValue,
             summary: option.summary,
             groupSatisfaction: option.groupSatisfaction,
+            personaValidation: option.personaValidation
+              ? (option.personaValidation as Prisma.InputJsonValue)
+              : Prisma.JsonNull,
             llmProvider: option.llmProvider,
             delYn: ACTIVE_DEL_YN,
           },
@@ -369,15 +376,24 @@ export class ScheduleService extends BaseSoftDeleteService {
       orderBy: { id: 'asc' },
     });
 
+    const members = this.mapMembers(room);
+
     const options = await this.consensusService.buildScheduleOptions({
       roomId,
       destination: dto.destination,
       tripDate: dto.tripDate,
       startTime: dto.startTime,
       endTime: dto.endTime,
-      members: this.mapMembers(room),
+      members,
       places: this.mapPlaces(places),
     });
+
+    const personaResults = this.personaValidationService.validateOptions(options, members);
+
+    const optionsWithPersona = options.map((option) => ({
+      ...option,
+      personaValidation: personaResults.get(option.optionType) ?? null,
+    }));
 
     const latest = await this.prisma.schedule.findFirst({
       where: this.activeWhere({ roomId: room.id }),
@@ -385,7 +401,7 @@ export class ScheduleService extends BaseSoftDeleteService {
     });
     const version = (latest?.version ?? 0) + 1;
 
-    const created = await this.createScheduleVersion(room.id, version, dto, options);
+    const created = await this.createScheduleVersion(room.id, version, dto, optionsWithPersona);
     const memberNicknames = this.buildMemberNicknameMap(room);
     const placesById = new Map(places.map((place) => [Number(place.id), place] as const));
 
@@ -443,6 +459,7 @@ export class ScheduleService extends BaseSoftDeleteService {
       isConfirmed: schedule.isConfirmed,
       groupSatisfaction: schedule.groupSatisfaction,
       summary: schedule.summary,
+      personaValidation: schedule.personaValidation,
       slots: schedule.slots.map((slot) => this.formatStoredScheduleSlot(slot, memberNicknames)),
       satisfactionByUser: this.formatSatisfactionByUser(schedule.satisfactionScores, memberNicknames),
     });
