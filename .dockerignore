@@ -1,0 +1,19 @@
+# Build outputs and Gradle caches should never be sent to Docker.
+build/
+.gradle/
+gradle-*/
+
+# Local/editor noise
+.DS_Store
+.idea/
+*.iml
+
+# Runtime/local secrets
+.env
+.env.*
+!.env.example
+
+# VCS/docs not needed for image build
+.git/
+.omx/
+.codex/
