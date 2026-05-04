@@ -90,9 +90,12 @@ class TourApiClient(
 
     private fun parsePlaces(response: String): List<Place> {
         val root = objectMapper.readTree(response)
-        val items = root.path("response").path("body").path("items").path("item")
-
-        if (!items.isArray) return emptyList()
+        val itemNode = root.path("response").path("body").path("items").path("item")
+        val items = when {
+            itemNode.isArray -> itemNode.toList()
+            itemNode.isObject -> listOf(itemNode)
+            else -> emptyList()
+        }
 
         return items.mapNotNull { item ->
             try {

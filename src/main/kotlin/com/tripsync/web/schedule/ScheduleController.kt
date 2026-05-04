@@ -7,6 +7,7 @@ import com.tripsync.common.exception.DomainException
 import com.tripsync.web.dto.ConfirmScheduleDto
 import com.tripsync.web.dto.GenerateScheduleDto
 import com.tripsync.web.dto.RegenerateScheduleDto
+import com.tripsync.web.dto.ReorderScheduleSlotsDto
 import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
 import org.springframework.security.core.context.SecurityContextHolder
@@ -46,6 +47,14 @@ class ScheduleController(
     @GetMapping("/schedules/{scheduleId}")
     fun getSchedule(@PathVariable scheduleId: Long): ApiResponse<Map<String, Any?>> {
         return scheduleService.getSchedule(scheduleId, currentUser().id)
+    }
+
+    @PatchMapping("/schedules/{scheduleId}/slots/order")
+    fun reorderScheduleSlots(
+        @PathVariable scheduleId: Long,
+        @Valid @RequestBody dto: ReorderScheduleSlotsDto,
+    ): ApiResponse<Map<String, Any?>> {
+        return scheduleService.reorderScheduleSlots(scheduleId, currentUser().id, dto.slotIds)
     }
 
     @PostMapping("/schedules/{scheduleId}/regenerate")
