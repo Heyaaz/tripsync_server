@@ -120,3 +120,7 @@ data class ReorderScheduleSlotsDto(
     @field:NotEmpty
     val slotIds: List<Long>,
 )
+
+data class AddScheduleSlotDto(
+    val placeId: Long,
+)
