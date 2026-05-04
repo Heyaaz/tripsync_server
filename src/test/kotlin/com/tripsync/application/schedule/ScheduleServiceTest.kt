@@ -21,6 +21,7 @@ import com.tripsync.domain.repository.TripRoomRepository
 import com.tripsync.domain.repository.UserRepository
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -29,6 +30,7 @@ import org.springframework.test.context.ActiveProfiles
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -59,12 +61,32 @@ class ScheduleServiceTest(
         assertEquals(fixture.newPlace.name, (appended["place"] as Map<*, *>)["name"])
         assertEquals("직접 추가한 장소입니다.", appended["reason"])
         assertNotNull(appended["slotId"])
+        val first = addedSlots.first() as Map<*, *>
+        assertEquals(first["endTime"], appended["startTime"])
+        assertTrue(Instant.parse(first["startTime"].toString()) >= fixture.windowStart)
+        assertTrue(Instant.parse(appended["endTime"].toString()) <= fixture.windowEnd)
 
         val searchAfter = scheduleService.searchPlacesForSchedule(fixture.schedule.id, fixture.host.id, "꽃지").data!!
         val candidateAfter = (searchAfter["places"] as List<*>)
             .map { it as Map<*, *> }
             .first { it["id"] == fixture.newPlace.id }
         assertEquals(true, candidateAfter["alreadyAdded"])
+    }
+
+
+    @Test
+    fun `unconfirmed schedule cannot be searched or edited`() {
+        val fixture = createFixture(isConfirmed = false)
+
+        val searchError = assertThrows(DomainException::class.java) {
+            scheduleService.searchPlacesForSchedule(fixture.schedule.id, fixture.host.id, "꽃지")
+        }
+        assertEquals("SCHEDULE_NOT_CONFIRMED", searchError.code)
+
+        val addError = assertThrows(DomainException::class.java) {
+            scheduleService.addScheduleSlot(fixture.schedule.id, fixture.host.id, fixture.newPlace.id)
+        }
+        assertEquals("SCHEDULE_NOT_CONFIRMED", addError.code)
     }
 
     @Test
@@ -79,7 +101,7 @@ class ScheduleServiceTest(
         assertEquals("INVALID_REQUEST", error.code)
     }
 
-    private fun createFixture(): Fixture {
+    private fun createFixture(isConfirmed: Boolean = true): Fixture {
         val suffix = System.nanoTime()
         val host = userRepository.save(
             User(
@@ -107,8 +129,8 @@ class ScheduleServiceTest(
                 room = room,
                 version = 1,
                 optionType = ScheduleOptionType.BALANCED,
-                isConfirmed = true,
-                generationInput = mapOf("destination" to "충남"),
+                isConfirmed = isConfirmed,
+                generationInput = mapOf("destination" to "충남", "startTime" to "09:00", "endTime" to "21:00"),
                 summary = "확정 일정",
                 groupSatisfaction = 80,
             )
@@ -126,7 +148,17 @@ class ScheduleServiceTest(
             )
         )
 
-        return Fixture(host, schedule, newPlace)
+        val zone = ZoneId.of("Asia/Seoul")
+        val windowStart = room.tripDate
+            .atTime(9, 0)
+            .atZone(zone)
+            .toInstant()
+        val windowEnd = room.tripDate
+            .atTime(21, 0)
+            .atZone(zone)
+            .toInstant()
+
+        return Fixture(host, schedule, newPlace, windowStart, windowEnd)
     }
 
     private fun place(tourApiId: String, name: String, address: String): Place {
@@ -149,5 +181,7 @@ class ScheduleServiceTest(
         val host: User,
         val schedule: Schedule,
         val newPlace: Place,
+        val windowStart: Instant,
+        val windowEnd: Instant,
     )
 }

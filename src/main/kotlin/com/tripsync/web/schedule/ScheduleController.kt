@@ -64,7 +64,7 @@ class ScheduleController(
         @PathVariable scheduleId: Long,
         @Valid @RequestBody dto: AddScheduleSlotDto,
     ): ApiResponse<Map<String, Any?>> {
-        return scheduleService.addScheduleSlot(scheduleId, currentUser().id, dto.placeId!!)
+        return scheduleService.addScheduleSlot(scheduleId, currentUser().id, dto.placeId)
     }
 
     @PatchMapping("/schedules/{scheduleId}/slots/order")

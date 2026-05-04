@@ -124,6 +124,7 @@ class ScheduleService(
     fun searchPlacesForSchedule(scheduleId: Long, userId: Long, query: String): ApiResponse<Map<String, Any?>> {
         val schedule = getActiveSchedule(scheduleId)
         validateHost(schedule.room.id, userId)
+        validateConfirmedSchedule(schedule)
 
         val normalizedQuery = query.trim().lowercase()
         val usedPlaceIds = scheduleSlotRepository.findAllByScheduleIdAndDelYn(schedule.id, YnFlag.N)
@@ -161,6 +162,7 @@ class ScheduleService(
     fun addScheduleSlot(scheduleId: Long, userId: Long, placeId: Long): ApiResponse<Map<String, Any?>> {
         val schedule = getActiveSchedule(scheduleId)
         validateHost(schedule.room.id, userId)
+        validateConfirmedSchedule(schedule)
 
         val place = placeRepository.findById(placeId)
             .orElseThrow { DomainException(HttpStatus.NOT_FOUND, "PLACE_NOT_FOUND", "장소를 찾을 수 없습니다.") }
@@ -178,7 +180,7 @@ class ScheduleService(
         val startTime = orderedSlots.maxByOrNull { it.orderIndex }?.endTime ?: defaultSlotStart(schedule)
         val endTime = startTime.plus(Duration.ofHours(2))
 
-        scheduleSlotRepository.save(
+        val newSlot = scheduleSlotRepository.save(
             ScheduleSlot(
                 schedule = schedule,
                 startTime = startTime,
@@ -191,6 +193,7 @@ class ScheduleService(
                 orderIndex = nextOrderIndex,
             )
         )
+        redistributeSlotsWithinScheduleWindow(schedule, orderedSlots + newSlot)
 
         return ApiResponse.ok(formatStoredSchedule(schedule))
     }
@@ -500,11 +503,58 @@ class ScheduleService(
     }
 
 
-    private fun defaultSlotStart(schedule: Schedule): java.time.Instant {
-        return LocalDate.parse(schedule.room.tripDate.toString())
-            .atTime(9, 0)
-            .atZone(ZoneId.of("Asia/Seoul"))
+
+    private fun validateConfirmedSchedule(schedule: Schedule) {
+        if (!schedule.isConfirmed) {
+            throw DomainException(HttpStatus.CONFLICT, "SCHEDULE_NOT_CONFIRMED", "확정된 일정만 수정할 수 있습니다.")
+        }
+    }
+
+    private fun redistributeSlotsWithinScheduleWindow(schedule: Schedule, slots: List<ScheduleSlot>) {
+        val activeSlots = slots.sortedBy { it.orderIndex }
+        if (activeSlots.isEmpty()) return
+
+        val window = scheduleTimeWindow(schedule)
+        var cursor = window.first
+
+        activeSlots.forEachIndexed { index, slot ->
+            val remainingSlots = activeSlots.size - index
+            val remainingMinutes = Duration.between(cursor, window.second).toMinutes().coerceAtLeast(remainingSlots.toLong())
+            val duration = if (index == activeSlots.lastIndex) {
+                remainingMinutes
+            } else {
+                (remainingMinutes / remainingSlots).coerceAtLeast(1)
+            }
+            slot.startTime = cursor
+            slot.endTime = if (index == activeSlots.lastIndex) window.second else cursor.plus(Duration.ofMinutes(duration))
+            cursor = slot.endTime
+        }
+    }
+
+    private fun scheduleTimeWindow(schedule: Schedule): Pair<java.time.Instant, java.time.Instant> {
+        val input = schedule.generationInput
+        val startText = input["startTime"]?.toString()?.takeIf { it.isNotBlank() } ?: "09:00"
+        val endText = input["endTime"]?.toString()?.takeIf { it.isNotBlank() } ?: "21:00"
+        val tripDate = LocalDate.parse(schedule.room.tripDate.toString())
+        val zone = ZoneId.of("Asia/Seoul")
+        val startParts = startText.split(":")
+        val endParts = endText.split(":")
+        val start = tripDate
+            .atTime(startParts.getOrNull(0)?.toIntOrNull() ?: 9, startParts.getOrNull(1)?.toIntOrNull() ?: 0)
+            .atZone(zone)
             .toInstant()
+        var end = tripDate
+            .atTime(endParts.getOrNull(0)?.toIntOrNull() ?: 21, endParts.getOrNull(1)?.toIntOrNull() ?: 0)
+            .atZone(zone)
+            .toInstant()
+        if (!end.isAfter(start)) {
+            end = start.plus(Duration.ofHours(12))
+        }
+        return start to end
+    }
+
+    private fun defaultSlotStart(schedule: Schedule): java.time.Instant {
+        return scheduleTimeWindow(schedule).first
     }
 
     private fun isDepopulationArea(metadataTags: Map<String, Any>?): Boolean {
