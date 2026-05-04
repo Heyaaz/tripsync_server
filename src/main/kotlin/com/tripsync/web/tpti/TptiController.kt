@@ -24,7 +24,7 @@ class TptiController(
     @PostMapping("/tpti/submit")
     @ResponseStatus(HttpStatus.CREATED)
     fun submit(@Valid @RequestBody dto: SubmitTptiDto): ApiResponse<Map<String, Any>> {
-        return tptiService.submitResult(dto.answers, dto.manualAdjustments, currentUser())
+        return tptiService.submitResult(dto.answers, dto.manualAdjustments?.toAxisScores(), currentUser())
     }
 
     @GetMapping("/tpti/result/{userId}")

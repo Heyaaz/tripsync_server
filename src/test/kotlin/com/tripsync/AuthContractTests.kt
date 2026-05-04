@@ -76,6 +76,60 @@ class AuthContractTests(
     }
 
 
+
+    @Test
+    fun `tpti submit rejects out of range answers before database constraints`() {
+        val session = mockMvc.post("/auth/guest") {
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"nickname":"검증게스트"}"""
+        }.andReturn().response.getCookie("ts_access_token")!!
+
+        mockMvc.post("/tpti/submit") {
+            cookie(session)
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"answers":[999,2,3,4,5,1,2,3]}"""
+        }.andExpect {
+            status { isBadRequest() }
+            jsonPath("$.success") { value(false) }
+            jsonPath("$.error.code") { value("INVALID_ANSWERS") }
+        }
+    }
+
+    @Test
+    fun `tpti submit supports legacy manual adjustment field names and validates score range`() {
+        val validSession = mockMvc.post("/auth/guest") {
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"nickname":"수동보정"}"""
+        }.andReturn().response.getCookie("ts_access_token")!!
+
+        mockMvc.post("/tpti/submit") {
+            cookie(validSession)
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"answers":[1,2,3,4,5,1,2,3],"manualAdjustments":{"mobilityScore":85,"photoScore":70,"budgetScore":40,"themeScore":55}}"""
+        }.andExpect {
+            status { isCreated() }
+            jsonPath("$.data.scores.mobility") { value(85) }
+            jsonPath("$.data.scores.photo") { value(70) }
+            jsonPath("$.data.scores.budget") { value(40) }
+            jsonPath("$.data.scores.theme") { value(55) }
+        }
+
+        val invalidSession = mockMvc.post("/auth/guest") {
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"nickname":"수동오류"}"""
+        }.andReturn().response.getCookie("ts_access_token")!!
+
+        mockMvc.post("/tpti/submit") {
+            cookie(invalidSession)
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"answers":[1,2,3,4,5,1,2,3],"manualAdjustments":{"mobilityScore":101,"photoScore":70,"budgetScore":40,"themeScore":55}}"""
+        }.andExpect {
+            status { isBadRequest() }
+            jsonPath("$.success") { value(false) }
+            jsonPath("$.error.code") { value("INVALID_REQUEST") }
+        }
+    }
+
     @Test
     fun `host tpti is attached to room members when submitted before or after room creation`() {
         val hostSession = registerSession("host-before@example.com", "방장-before")

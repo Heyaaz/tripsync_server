@@ -34,12 +34,10 @@ class TptiService(
 
     @Transactional
     fun submitResult(answers: List<Int>, manualAdjustments: AxisScores?, user: User): ApiResponse<Map<String, Any>> {
-        if (answers.size != QUESTIONS.size) {
-            throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_ANSWERS", "8개 문항 모두 응답해야 합니다.")
-        }
+        validateAnswers(answers)
 
         val calculated = calculateScores(answers)
-        val finalScores = manualAdjustments ?: calculated
+        val finalScores = manualAdjustments?.also { validateManualAdjustments(it) } ?: calculated
         val characterName = buildCharacterName(finalScores)
 
         val result = tptiResultRepository.save(
@@ -93,6 +91,20 @@ class TptiService(
         return ApiResponse.ok(resultResponse(result) + mapOf("nickname" to result.user.nickname))
     }
 
+    private fun validateAnswers(answers: List<Int>) {
+        if (answers.size != QUESTIONS.size) {
+            throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_ANSWERS", "8개 문항 모두 응답해야 합니다.")
+        }
+        if (answers.any { it !in 1..5 }) {
+            throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_ANSWERS", "TPTI 응답은 1부터 5 사이의 값이어야 합니다.")
+        }
+    }
+
+    private fun validateManualAdjustments(scores: AxisScores) {
+        if (listOf(scores.mobility, scores.photo, scores.budget, scores.theme).any { it !in 0..100 }) {
+            throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "수동 보정 점수는 0부터 100 사이의 값이어야 합니다.")
+        }
+    }
 
     private fun syncExistingRoomProfiles(user: User, result: TptiResult) {
         roomMemberRepository.findAllByUserIdAndDelYn(user.id, YnFlag.N).forEach { member ->
