@@ -1,9 +1,8 @@
 package com.tripsync.application.persona
 
-import com.tripsync.application.consensus.ConsensusService
-import com.tripsync.application.consensus.ScheduleOptionDraft
 import com.tripsync.domain.entity.AxisScores
-import com.tripsync.domain.entity.User
+import com.tripsync.domain.enums.ScheduleOptionType
+import com.tripsync.domain.enums.SlotType
 import mu.KotlinLogging
 import org.springframework.stereotype.Service
 
@@ -36,37 +35,58 @@ class PersonaValidationService(
         val scores: AxisScores,
     )
 
+    data class ScheduleOptionForValidation(
+        val optionType: ScheduleOptionType,
+        val groupSatisfaction: Int,
+        val slots: List<ScheduleSlotForValidation>,
+        val satisfactionByUser: List<SatisfactionForValidation>,
+    )
+
+    data class ScheduleSlotForValidation(
+        val slotType: SlotType,
+        val reasonText: String,
+        val scores: AxisScores,
+    )
+
+    data class SatisfactionForValidation(
+        val userId: Long,
+        val score: Int,
+    )
+
     fun validateOptions(
-        options: List<ScheduleOptionDraft>,
+        options: List<ScheduleOptionForValidation>,
         members: List<MemberSnapshot>,
-    ): Map<com.tripsync.domain.enums.ScheduleOptionType, ValidationResult> {
+    ): Map<ScheduleOptionType, ValidationResult> {
         val start = System.currentTimeMillis()
 
         val allMatchedPersonas = members.flatMap { member ->
             personaVectorService.matchForMember(member.scores, topK = 3)
         }.distinctBy { it.uuid }
 
+        if (allMatchedPersonas.isEmpty()) {
+            logger.info { "No persona matches available for ${members.size} members in ${System.currentTimeMillis() - start}ms" }
+            return emptyMap()
+        }
+
         logger.info { "Matched ${allMatchedPersonas.size} unique personas for ${members.size} members in ${System.currentTimeMillis() - start}ms" }
 
         return options.associate { option ->
             val slotScores = option.slots.map { slot ->
-                val slotVector = AxisScores(
-                    mobility = slot.placeId.toInt() % 100,
-                    photo = slot.placeId.toInt() % 100,
-                    budget = slot.placeId.toInt() % 100,
-                    theme = slot.placeId.toInt() % 100,
-                )
                 val avgMatch = allMatchedPersonas.map { persona ->
-                    1.0 - (slotVector.l1Distance(persona.scores) / 400.0)
+                    1.0 - (slot.scores.l1Distance(persona.scores) / 400.0)
                 }.average()
                 avgMatch
             }
 
-            val acceptanceScore = (slotScores.average() * 100).toInt().coerceIn(0, 100)
+            val acceptanceScore = if (slotScores.isEmpty()) {
+                0
+            } else {
+                (slotScores.average() * 100).toInt().coerceIn(0, 100)
+            }
 
             val positiveSignals = buildPositiveSignals(option, members)
             val objections = buildObjections(option, members)
-            val persuasions = buildPersuasionPoints(option, members)
+            val persuasions = buildPersuasionPoints(option)
 
             option.optionType to ValidationResult(
                 personaAcceptanceScore = acceptanceScore,
@@ -87,14 +107,14 @@ class PersonaValidationService(
         }
     }
 
-    private fun buildPositiveSignals(option: ScheduleOptionDraft, members: List<MemberSnapshot>): List<String> {
+    private fun buildPositiveSignals(option: ScheduleOptionForValidation, members: List<MemberSnapshot>): List<String> {
         return listOf(
-            "${members.size}명의 취향이 ${option.slots.count { it.slotType == com.tripsync.domain.enums.SlotType.COMMON }}개 공통 슬롯에서 조화를 이룹니다.",
+            "${members.size}명의 취향이 ${option.slots.count { it.slotType == SlotType.COMMON }}개 공통 슬롯에서 조화를 이룹니다.",
             "그룹 만족도 ${option.groupSatisfaction}점으로 안정적인 선택입니다.",
         )
     }
 
-    private fun buildObjections(option: ScheduleOptionDraft, members: List<MemberSnapshot>): List<String> {
+    private fun buildObjections(option: ScheduleOptionForValidation, members: List<MemberSnapshot>): List<String> {
         val lowSatisfaction = option.satisfactionByUser.filter { it.score < 60 }
         return lowSatisfaction.map {
             val member = members.find { m -> m.userId == it.userId }
@@ -102,9 +122,9 @@ class PersonaValidationService(
         }
     }
 
-    private fun buildPersuasionPoints(option: ScheduleOptionDraft, members: List<MemberSnapshot>): List<String> {
-        return option.slots.filter { it.slotType == com.tripsync.domain.enums.SlotType.PERSONAL }.map { slot ->
-            "${slot.reasonText}로 개인 취향을 반영하여 갈등을 최소화했습니다."
+    private fun buildPersuasionPoints(option: ScheduleOptionForValidation): List<String> {
+        return option.slots.filter { it.slotType == SlotType.PERSONAL }.map { slot ->
+            slot.reasonText.trim().trimEnd('.', '!', '?', '。')
         }.distinct()
     }
 }

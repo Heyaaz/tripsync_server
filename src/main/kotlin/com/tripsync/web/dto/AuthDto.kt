@@ -115,3 +115,8 @@ data class RegenerateScheduleDto(
     val tripEndDate: String? = null,
     val reason: String? = null,
 )
+
+data class ReorderScheduleSlotsDto(
+    @field:NotEmpty
+    val slotIds: List<Long>,
+)
