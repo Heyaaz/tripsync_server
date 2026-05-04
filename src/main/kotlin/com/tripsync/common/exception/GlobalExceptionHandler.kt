@@ -5,6 +5,8 @@ import mu.KotlinLogging
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.MethodArgumentNotValidException
+import org.springframework.web.servlet.NoHandlerFoundException
+import org.springframework.web.servlet.resource.NoResourceFoundException
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 
@@ -20,6 +22,14 @@ class GlobalExceptionHandler {
             .body(ApiResponse.error(ex.code, ex.message))
     }
 
+    @ExceptionHandler(NoHandlerFoundException::class, NoResourceFoundException::class)
+    fun handleNotFoundException(ex: Exception): ResponseEntity<ApiResponse<Nothing>> {
+        logger.warn { "[NOT_FOUND] ${ex.message}" }
+        return ResponseEntity
+            .status(HttpStatus.NOT_FOUND)
+            .body(ApiResponse.error("NOT_FOUND", "요청한 API를 찾을 수 없습니다."))
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException::class)
     fun handleValidationException(ex: MethodArgumentNotValidException): ResponseEntity<ApiResponse<Nothing>> {
         val message = ex.bindingResult.fieldErrors.joinToString(", ") { "${it.field}: ${it.defaultMessage}" }
@@ -33,6 +43,6 @@ class GlobalExceptionHandler {
         logger.error(ex) { "Unexpected error occurred" }
         return ResponseEntity
             .status(HttpStatus.INTERNAL_SERVER_ERROR)
-            .body(ApiResponse.error("INTERNAL_ERROR", "서버 낶부 오류가 발생했습니다."))
+            .body(ApiResponse.error("INTERNAL_ERROR", "서버 내부 오류가 발생했습니다."))
     }
 }

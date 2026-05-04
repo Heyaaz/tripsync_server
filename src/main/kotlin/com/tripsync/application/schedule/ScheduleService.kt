@@ -16,6 +16,9 @@ import mu.KotlinLogging
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import java.time.Duration
+import java.time.LocalDate
+import java.time.ZoneId
 
 @Service
 class ScheduleService(
@@ -113,6 +116,82 @@ class ScheduleService(
     fun getSchedule(scheduleId: Long, userId: Long): ApiResponse<Map<String, Any?>> {
         val schedule = getActiveSchedule(scheduleId)
         validateRoomMember(schedule.room.id, userId)
+        return ApiResponse.ok(formatStoredSchedule(schedule))
+    }
+
+
+    @Transactional(readOnly = true)
+    fun searchPlacesForSchedule(scheduleId: Long, userId: Long, query: String): ApiResponse<Map<String, Any?>> {
+        val schedule = getActiveSchedule(scheduleId)
+        validateHost(schedule.room.id, userId)
+
+        val normalizedQuery = query.trim().lowercase()
+        val usedPlaceIds = scheduleSlotRepository.findAllByScheduleIdAndDelYn(schedule.id, YnFlag.N)
+            .map { it.place.id }
+            .toSet()
+        val places = placeRepository.findByDelYn(YnFlag.N)
+            .asSequence()
+            .filter { place ->
+                normalizedQuery.isBlank() ||
+                    place.name.lowercase().contains(normalizedQuery) ||
+                    place.address.lowercase().contains(normalizedQuery) ||
+                    place.category.lowercase().contains(normalizedQuery)
+            }
+            .sortedWith(
+                compareByDescending<Place> { isDepopulationArea(it.metadataTags) }
+                    .thenBy { it.name }
+            )
+            .take(30)
+            .map { place ->
+                formatPlace(place, place.id, place.name, place.address) + mapOf(
+                    "alreadyAdded" to usedPlaceIds.contains(place.id),
+                )
+            }
+            .toList()
+
+        return ApiResponse.ok(
+            mapOf(
+                "places" to places,
+                "query" to query.trim(),
+            )
+        )
+    }
+
+    @Transactional
+    fun addScheduleSlot(scheduleId: Long, userId: Long, placeId: Long): ApiResponse<Map<String, Any?>> {
+        val schedule = getActiveSchedule(scheduleId)
+        validateHost(schedule.room.id, userId)
+
+        val place = placeRepository.findById(placeId)
+            .orElseThrow { DomainException(HttpStatus.NOT_FOUND, "PLACE_NOT_FOUND", "장소를 찾을 수 없습니다.") }
+        if (place.delYn != YnFlag.N) {
+            throw DomainException(HttpStatus.NOT_FOUND, "PLACE_NOT_FOUND", "장소를 찾을 수 없습니다.")
+        }
+
+        val slots = scheduleSlotRepository.findAllByScheduleIdAndDelYn(schedule.id, YnFlag.N)
+        if (slots.any { it.place.id == place.id }) {
+            throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "이미 일정에 포함된 장소입니다.")
+        }
+
+        val orderedSlots = slots.sortedBy { it.orderIndex }
+        val nextOrderIndex = (orderedSlots.maxOfOrNull { it.orderIndex } ?: 0) + 1
+        val startTime = orderedSlots.maxByOrNull { it.orderIndex }?.endTime ?: defaultSlotStart(schedule)
+        val endTime = startTime.plus(Duration.ofHours(2))
+
+        scheduleSlotRepository.save(
+            ScheduleSlot(
+                schedule = schedule,
+                startTime = startTime,
+                endTime = endTime,
+                place = place,
+                slotType = com.tripsync.domain.enums.SlotType.COMMON,
+                targetUser = null,
+                reasonAxis = com.tripsync.domain.enums.ReasonAxis.COMMON,
+                reasonText = "직접 추가한 장소입니다.",
+                orderIndex = nextOrderIndex,
+            )
+        )
+
         return ApiResponse.ok(formatStoredSchedule(schedule))
     }
 
@@ -284,6 +363,7 @@ class ScheduleService(
                 "targetNickname" to slot.targetUserId?.let { memberNicknames[it] },
                 "reasonAxis" to slot.reasonAxis.name.lowercase(),
                 "reasonText" to slot.reasonText,
+                "reason" to slot.reasonText,
                 "place" to formatPlace(place, slot.placeId, slot.placeName, slot.placeAddress),
             )
         },
@@ -321,6 +401,7 @@ class ScheduleService(
                     "targetNickname" to slot.targetUser?.id?.let { memberNicknames[it] },
                     "reasonAxis" to slot.reasonAxis.name.lowercase(),
                     "reasonText" to slot.reasonText,
+                    "reason" to slot.reasonText,
                     "place" to formatPlace(slot.place, slot.place.id, slot.place.name, slot.place.address),
                 )
             },
@@ -416,6 +497,14 @@ class ScheduleService(
             "objectionReasons" to objectionReasons,
             "persuasionPoints" to persuasionPoints,
         )
+    }
+
+
+    private fun defaultSlotStart(schedule: Schedule): java.time.Instant {
+        return LocalDate.parse(schedule.room.tripDate.toString())
+            .atTime(9, 0)
+            .atZone(ZoneId.of("Asia/Seoul"))
+            .toInstant()
     }
 
     private fun isDepopulationArea(metadataTags: Map<String, Any>?): Boolean {

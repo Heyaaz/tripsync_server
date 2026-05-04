@@ -4,6 +4,7 @@ import com.tripsync.application.auth.CustomUserDetailsService
 import com.tripsync.application.schedule.ScheduleService
 import com.tripsync.common.dto.ApiResponse
 import com.tripsync.common.exception.DomainException
+import com.tripsync.web.dto.AddScheduleSlotDto
 import com.tripsync.web.dto.ConfirmScheduleDto
 import com.tripsync.web.dto.GenerateScheduleDto
 import com.tripsync.web.dto.RegenerateScheduleDto
@@ -47,6 +48,23 @@ class ScheduleController(
     @GetMapping("/schedules/{scheduleId}")
     fun getSchedule(@PathVariable scheduleId: Long): ApiResponse<Map<String, Any?>> {
         return scheduleService.getSchedule(scheduleId, currentUser().id)
+    }
+
+    @GetMapping("/schedules/{scheduleId}/places/search")
+    fun searchSchedulePlaces(
+        @PathVariable scheduleId: Long,
+        @RequestParam(required = false, defaultValue = "") query: String,
+    ): ApiResponse<Map<String, Any?>> {
+        return scheduleService.searchPlacesForSchedule(scheduleId, currentUser().id, query)
+    }
+
+    @PostMapping("/schedules/{scheduleId}/slots")
+    @ResponseStatus(HttpStatus.CREATED)
+    fun addScheduleSlot(
+        @PathVariable scheduleId: Long,
+        @Valid @RequestBody dto: AddScheduleSlotDto,
+    ): ApiResponse<Map<String, Any?>> {
+        return scheduleService.addScheduleSlot(scheduleId, currentUser().id, dto.placeId!!)
     }
 
     @PatchMapping("/schedules/{scheduleId}/slots/order")
