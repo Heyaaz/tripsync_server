@@ -91,21 +91,21 @@ class OpenAiClient(
 
         return """
             여행 일정 최적화 요청
-            
+
             방 ID: ${room.roomId}
             목적지: ${room.destination}
             날짜: ${room.tripDate}
             옵션 유형: $label (${optionType.name})
-            
+
             공통 지대: ${commonAxes.joinToString()}
             우선 축: ${priorityAxes.joinToString()}
             멤버: ${members.joinToString { it.nickname }}
-            
+
             슬롯 계획:
             $slotDescriptions
-            
+
             각 슬롯의 후보 장소 중에서 가장 적합한 장소를 선택하고, 일정 전체 요약을 50자 이내로 개선해주세요.
-            
+
             응답 형식:
             {
               "summary": "개선된 요약 문장",

@@ -206,4 +206,3 @@ class AuthController(
         const val OAUTH_STATE_COOKIE_NAME = "ts_oauth_state"
     }
 }
-
