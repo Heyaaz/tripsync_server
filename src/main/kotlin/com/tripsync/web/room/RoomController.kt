@@ -25,6 +25,11 @@ class RoomController(
         return roomService.createRoom(currentUser(), dto.destination, LocalDate.parse(dto.tripDate))
     }
 
+    @GetMapping("/my")
+    fun getMyRooms(): ApiResponse<Map<String, Any>> {
+        return roomService.getMyRooms(currentUser())
+    }
+
     @GetMapping("/share/{shareCode}")
     fun getShareRoom(@PathVariable shareCode: String): ApiResponse<Map<String, Any>> {
         return roomService.getShareRoom(shareCode)
