@@ -175,6 +175,22 @@ class AuthContractTests(
     }
 
     @Test
+    fun `host can see created rooms from home entry list`() {
+        val hostSession = registerSession("host-rooms@example.com", "방목록")
+        val firstRoomId = createRoom(hostSession)
+        val secondRoomId = createRoom(hostSession)
+
+        mockMvc.get("/rooms/my") { cookie(hostSession) }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.data.rooms[0].roomId") { value(secondRoomId.toInt()) }
+                jsonPath("$.data.rooms[1].roomId") { value(firstRoomId.toInt()) }
+                jsonPath("$.data.rooms[0].destination") { value("충청남도") }
+                jsonPath("$.data.rooms[0].memberCount") { value(1) }
+            }
+    }
+
+    @Test
     fun `oauth start sets state cookie and local callback creates session`() {
         val start = mockMvc.get("/auth/google") {
             param("redirectPath", "/rooms/new")

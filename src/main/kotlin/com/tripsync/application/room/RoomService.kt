@@ -73,6 +73,25 @@ class RoomService(
     }
 
     @Transactional(readOnly = true)
+    fun getMyRooms(user: User): ApiResponse<Map<String, Any>> {
+        if (user.isGuest) {
+            throw DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "방장 계정으로 로그인해주세요.")
+        }
+
+        val rooms = roomMemberRepository.findAllByUserIdAndDelYn(user.id, YnFlag.N)
+            .map { it.room }
+            .filter { it.delYn == YnFlag.N }
+            .distinctBy { it.id }
+            .sortedWith(compareByDescending<TripRoom> { it.createdAt }.thenByDescending { it.id })
+            .map { room ->
+                val memberCount = roomMemberRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N).size
+                roomSummary(room, memberCount)
+            }
+
+        return ApiResponse.ok(mapOf("rooms" to rooms))
+    }
+
+    @Transactional(readOnly = true)
     fun getShareRoom(shareCode: String): ApiResponse<Map<String, Any>> {
         val room = tripRoomRepository.findByShareCodeAndDelYn(shareCode, YnFlag.N)
             ?: throw DomainException(HttpStatus.NOT_FOUND, "INVALID_SHARE_CODE", "유효하지 않은 공유 코드입니다.")
