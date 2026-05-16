@@ -25,20 +25,20 @@ class ScheduleService(
     private val scheduleRepository: ScheduleRepository,
     private val scheduleSlotRepository: ScheduleSlotRepository,
     private val satisfactionScoreRepository: SatisfactionScoreRepository,
-    private val tripRoomRepository: TripRoomRepository,
-    private val roomMemberRepository: RoomMemberRepository,
     private val roomMemberProfileRepository: RoomMemberProfileRepository,
     private val placeRepository: PlaceRepository,
     private val userRepository: UserRepository,
     private val consensusService: ConsensusService,
     private val personaValidationService: PersonaValidationService,
+    private val accessPolicy: ScheduleAccessPolicy,
+    private val responseMapper: ScheduleResponseMapper,
 ) {
     private val logger = KotlinLogging.logger {}
 
     @Transactional
     fun generateSchedule(roomId: Long, hostId: Long, dto: GenerateScheduleDto): ApiResponse<Map<String, Any?>> {
-        validateHost(roomId, hostId)
-        val room = getActiveRoom(roomId)
+        accessPolicy.validateHost(roomId, hostId)
+        val room = accessPolicy.getActiveRoom(roomId)
         val profiles = roomMemberProfileRepository.findAllByRoomIdAndDelYn(roomId, YnFlag.N)
             .sortedBy { it.createdAt }
         if (profiles.size < 2) {
@@ -100,7 +100,7 @@ class ScheduleService(
                 "roomId" to roomId,
                 "version" to version,
                 "options" to saved.map { (schedule, option) ->
-                    formatGeneratedOption(
+                    responseMapper.formatGeneratedOption(
                         scheduleId = schedule.id,
                         option = option,
                         personaValidation = schedule.personaValidation,
@@ -114,17 +114,17 @@ class ScheduleService(
 
     @Transactional(readOnly = true)
     fun getSchedule(scheduleId: Long, userId: Long): ApiResponse<Map<String, Any?>> {
-        val schedule = getActiveSchedule(scheduleId)
-        validateRoomMember(schedule.room.id, userId)
-        return ApiResponse.ok(formatStoredSchedule(schedule))
+        val schedule = accessPolicy.getActiveSchedule(scheduleId)
+        accessPolicy.validateRoomMember(schedule.room.id, userId)
+        return ApiResponse.ok(responseMapper.formatStoredSchedule(schedule))
     }
 
 
     @Transactional(readOnly = true)
     fun searchPlacesForSchedule(scheduleId: Long, userId: Long, query: String): ApiResponse<Map<String, Any?>> {
-        val schedule = getActiveSchedule(scheduleId)
-        validateHost(schedule.room.id, userId)
-        validateConfirmedSchedule(schedule)
+        val schedule = accessPolicy.getActiveSchedule(scheduleId)
+        accessPolicy.validateHost(schedule.room.id, userId)
+        accessPolicy.validateConfirmedSchedule(schedule)
 
         val normalizedQuery = query.trim().lowercase()
         val usedPlaceIds = scheduleSlotRepository.findAllByScheduleIdAndDelYn(schedule.id, YnFlag.N)
@@ -139,12 +139,12 @@ class ScheduleService(
                     place.category.lowercase().contains(normalizedQuery)
             }
             .sortedWith(
-                compareByDescending<Place> { isDepopulationArea(it.metadataTags) }
+                compareByDescending<Place> { responseMapper.isDepopulationArea(it.metadataTags) }
                     .thenBy { it.name }
             )
             .take(30)
             .map { place ->
-                formatPlace(place, place.id, place.name, place.address) + mapOf(
+                responseMapper.formatPlace(place, place.id, place.name, place.address) + mapOf(
                     "alreadyAdded" to usedPlaceIds.contains(place.id),
                 )
             }
@@ -160,9 +160,9 @@ class ScheduleService(
 
     @Transactional
     fun addScheduleSlot(scheduleId: Long, userId: Long, placeId: Long): ApiResponse<Map<String, Any?>> {
-        val schedule = getActiveSchedule(scheduleId)
-        validateHost(schedule.room.id, userId)
-        validateConfirmedSchedule(schedule)
+        val schedule = accessPolicy.getActiveSchedule(scheduleId)
+        accessPolicy.validateHost(schedule.room.id, userId)
+        accessPolicy.validateConfirmedSchedule(schedule)
 
         val place = placeRepository.findById(placeId)
             .orElseThrow { DomainException(HttpStatus.NOT_FOUND, "PLACE_NOT_FOUND", "장소를 찾을 수 없습니다.") }
@@ -195,13 +195,13 @@ class ScheduleService(
         )
         redistributeSlotsWithinScheduleWindow(schedule, orderedSlots + newSlot)
 
-        return ApiResponse.ok(formatStoredSchedule(schedule))
+        return ApiResponse.ok(responseMapper.formatStoredSchedule(schedule))
     }
 
     @Transactional
     fun reorderScheduleSlots(scheduleId: Long, userId: Long, slotIds: List<Long>): ApiResponse<Map<String, Any?>> {
-        val schedule = getActiveSchedule(scheduleId)
-        validateHost(schedule.room.id, userId)
+        val schedule = accessPolicy.getActiveSchedule(scheduleId)
+        accessPolicy.validateHost(schedule.room.id, userId)
 
         val slots = scheduleSlotRepository.findAllByScheduleIdAndDelYn(schedule.id, YnFlag.N)
         val slotsById = slots.associateBy { it.id }
@@ -214,12 +214,12 @@ class ScheduleService(
             slotsById.getValue(slotId).orderIndex = index + 1
         }
 
-        return ApiResponse.ok(formatStoredSchedule(schedule))
+        return ApiResponse.ok(responseMapper.formatStoredSchedule(schedule))
     }
 
     @Transactional
     fun confirmSchedule(roomId: Long, hostId: Long, optionType: String): ApiResponse<Map<String, Any?>> {
-        validateHost(roomId, hostId)
+        accessPolicy.validateHost(roomId, hostId)
         val type = parseOptionType(optionType)
         val latest = scheduleRepository.findTopByRoomIdAndDelYnOrderByVersionDesc(roomId, YnFlag.N)
             ?: throw DomainException(HttpStatus.NOT_FOUND, "SCHEDULE_NOT_FOUND", "확정할 일정 옵션이 없습니다.")
@@ -242,8 +242,8 @@ class ScheduleService(
 
     @Transactional
     fun regenerateSchedule(scheduleId: Long, userId: Long, dto: RegenerateScheduleDto): ApiResponse<Map<String, Any?>> {
-        val existing = getActiveSchedule(scheduleId)
-        validateHost(existing.room.id, userId)
+        val existing = accessPolicy.getActiveSchedule(scheduleId)
+        accessPolicy.validateHost(existing.room.id, userId)
         val generated = generateSchedule(
             existing.room.id,
             userId,
@@ -271,8 +271,8 @@ class ScheduleService(
 
     @Transactional(readOnly = true)
     fun getPublicShareSchedule(scheduleId: Long): ApiResponse<Map<String, Any?>> {
-        val schedule = getActiveSchedule(scheduleId)
-        return ApiResponse.ok(formatStoredSchedule(schedule))
+        val schedule = accessPolicy.getActiveSchedule(scheduleId)
+        return ApiResponse.ok(responseMapper.formatStoredSchedule(schedule))
     }
 
     private fun saveScheduleOption(
@@ -337,96 +337,6 @@ class ScheduleService(
 
         return schedule to option
     }
-
-    private fun formatGeneratedOption(
-        scheduleId: Long,
-        option: ScheduleOptionDraft,
-        personaValidation: Map<String, Any>?,
-        memberNicknames: Map<Long, String>,
-        placesById: Map<Long, Place>,
-    ): Map<String, Any?> = mapOf(
-        "scheduleId" to scheduleId,
-        "optionType" to option.optionType.name.lowercase(),
-        "label" to option.label,
-        "summary" to option.summary,
-        "groupSatisfaction" to option.groupSatisfaction,
-        "personaValidation" to personaValidation,
-        "llmProvider" to option.llmProvider,
-        "llmLatencyMs" to option.llmLatencyMs,
-        "fallbackUsed" to option.fallbackUsed,
-                "slots" to option.slots.sortedBy { it.orderIndex }.map { slot ->
-            val place = placesById[slot.placeId]
-            mapOf(
-                "slotId" to null,
-                "orderIndex" to slot.orderIndex,
-                "startTime" to slot.startTime.toString(),
-                "endTime" to slot.endTime.toString(),
-                "slotType" to slot.slotType.name.lowercase(),
-                "targetUserId" to slot.targetUserId,
-                "targetNickname" to slot.targetUserId?.let { memberNicknames[it] },
-                "reasonAxis" to slot.reasonAxis.name.lowercase(),
-                "reasonText" to slot.reasonText,
-                "reason" to slot.reasonText,
-                "place" to formatPlace(place, slot.placeId, slot.placeName, slot.placeAddress),
-            )
-        },
-        "satisfactionByUser" to option.satisfactionByUser.map {
-            mapOf(
-                "userId" to it.userId,
-                "nickname" to memberNicknames[it.userId],
-                "score" to it.score,
-            )
-        },
-    )
-
-    private fun formatStoredSchedule(schedule: Schedule): Map<String, Any?> {
-        val memberNicknames = roomMemberProfileRepository.findAllByRoomIdAndDelYn(schedule.room.id, YnFlag.N)
-            .associate { it.user.id to it.user.nickname }
-        return mapOf(
-            "id" to schedule.id,
-            "roomId" to schedule.room.id,
-            "destination" to schedule.room.destination,
-            "tripDate" to schedule.room.tripDate.toString(),
-            "version" to schedule.version,
-            "optionType" to schedule.optionType.name.lowercase(),
-            "isConfirmed" to schedule.isConfirmed,
-            "groupSatisfaction" to schedule.groupSatisfaction,
-            "summary" to (schedule.summary ?: ""),
-            "personaValidation" to schedule.personaValidation,
-            "slots" to schedule.slots.filter { it.delYn == YnFlag.N }.sortedBy { it.orderIndex }.map { slot ->
-                mapOf(
-                    "slotId" to slot.id,
-                    "orderIndex" to slot.orderIndex,
-                    "startTime" to slot.startTime.toString(),
-                    "endTime" to slot.endTime.toString(),
-                    "slotType" to slot.slotType.name.lowercase(),
-                    "targetUserId" to slot.targetUser?.id,
-                    "targetNickname" to slot.targetUser?.id?.let { memberNicknames[it] },
-                    "reasonAxis" to slot.reasonAxis.name.lowercase(),
-                    "reasonText" to slot.reasonText,
-                    "reason" to slot.reasonText,
-                    "place" to formatPlace(slot.place, slot.place.id, slot.place.name, slot.place.address),
-                )
-            },
-            "satisfactionByUser" to schedule.satisfactionScores.filter { it.delYn == YnFlag.N }.map { score ->
-                mapOf(
-                    "userId" to score.user.id,
-                    "nickname" to memberNicknames[score.user.id],
-                    "score" to score.score,
-                )
-            },
-        )
-    }
-
-    private fun formatPlace(place: Place?, id: Long, name: String, address: String): Map<String, Any?> = mapOf(
-        "id" to id,
-        "name" to name,
-        "address" to address,
-        "category" to place?.category,
-        "latitude" to place?.latitude?.toDouble(),
-        "longitude" to place?.longitude?.toDouble(),
-        "isDepopulationArea" to isDepopulationArea(place?.metadataTags),
-    )
 
     private fun safePersonaValidationByType(
         options: List<ScheduleOptionDraft>,
@@ -502,14 +412,6 @@ class ScheduleService(
         )
     }
 
-
-
-    private fun validateConfirmedSchedule(schedule: Schedule) {
-        if (!schedule.isConfirmed) {
-            throw DomainException(HttpStatus.CONFLICT, "SCHEDULE_NOT_CONFIRMED", "확정된 일정만 수정할 수 있습니다.")
-        }
-    }
-
     private fun redistributeSlotsWithinScheduleWindow(schedule: Schedule, slots: List<ScheduleSlot>) {
         val activeSlots = slots.sortedBy { it.orderIndex }
         if (activeSlots.isEmpty()) return
@@ -555,42 +457,6 @@ class ScheduleService(
 
     private fun defaultSlotStart(schedule: Schedule): java.time.Instant {
         return scheduleTimeWindow(schedule).first
-    }
-
-    private fun isDepopulationArea(metadataTags: Map<String, Any>?): Boolean {
-        return metadataTags?.get("populationDeclineArea") == true || metadataTags?.get("regionType") == "population_decline"
-    }
-
-    private fun getActiveRoom(roomId: Long): TripRoom {
-        val room = tripRoomRepository.findById(roomId)
-            .orElseThrow { DomainException(HttpStatus.NOT_FOUND, "ROOM_NOT_FOUND", "존재하지 않는 방입니다.") }
-        if (room.delYn != YnFlag.N) {
-            throw DomainException(HttpStatus.NOT_FOUND, "ROOM_NOT_FOUND", "존재하지 않는 방입니다.")
-        }
-        return room
-    }
-
-    private fun getActiveSchedule(scheduleId: Long): Schedule {
-        val schedule = scheduleRepository.findById(scheduleId)
-            .orElseThrow { DomainException(HttpStatus.NOT_FOUND, "SCHEDULE_NOT_FOUND", "일정을 찾을 수 없습니다.") }
-        if (schedule.delYn != YnFlag.N) {
-            throw DomainException(HttpStatus.NOT_FOUND, "SCHEDULE_NOT_FOUND", "일정을 찾을 수 없습니다.")
-        }
-        return schedule
-    }
-
-    private fun validateHost(roomId: Long, userId: Long) {
-        val member = roomMemberRepository.findByRoomIdAndUserIdAndDelYn(roomId, userId, YnFlag.N)
-            ?: throw DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "방장만 일정을 생성할 수 있습니다.")
-        if (member.role != com.tripsync.domain.enums.RoomMemberRole.HOST) {
-            throw DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "방장만 일정을 생성할 수 있습니다.")
-        }
-    }
-
-    private fun validateRoomMember(roomId: Long, userId: Long) {
-        if (!roomMemberRepository.existsByRoomIdAndUserIdAndDelYn(roomId, userId, YnFlag.N)) {
-            throw DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "방 멤버만 접근할 수 있습니다.")
-        }
     }
 
     private fun parseOptionType(optionType: String): ScheduleOptionType {
