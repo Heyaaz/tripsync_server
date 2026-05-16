@@ -102,6 +102,8 @@ class ScheduleGenerationPersistenceService(
                         "tripDate" to dto.tripDate,
                         "startTime" to dto.startTime,
                         "endTime" to dto.endTime,
+                        "tripStartDate" to (dto.tripStartDate ?: dto.tripDate),
+                        "tripEndDate" to (dto.tripEndDate ?: dto.tripDate),
                     ),
                     summary = option.summary,
                     groupSatisfaction = option.groupSatisfaction,
