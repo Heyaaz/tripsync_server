@@ -14,8 +14,12 @@ import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @Service
 class ConsensusService(
@@ -72,21 +76,18 @@ class ConsensusService(
     }
 
     suspend fun buildScheduleOptions(context: OptionContext): List<ScheduleOptionDraft> {
-        if (context.destination != "충남") {
-            throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_REQUEST", "MVP에서는 충남 일정만 생성할 수 있습니다.")
+        if (context.members.size < 2) {
+            throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "ROOM_NOT_READY", "일정 생성을 위해 최소 2명의 멤버가 필요합니다.")
         }
-        if (context.startTime != "09:00" || context.endTime != "21:00") {
-            throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_REQUEST", "MVP 일정 생성 시간은 09:00~21:00으로 고정됩니다.")
-        }
-        if (context.members.size !in 2..5) {
-            throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "ROOM_NOT_READY", "일정 생성 가능한 멤버 수는 2~5명입니다.")
-        }
-        if (context.places.isEmpty()) {
-            throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "PLACE_CANDIDATE_EMPTY", "일정 생성 후보 장소가 부족합니다.")
+
+        val window = parseScheduleWindow(context.tripDate, context.startTime, context.endTime)
+        val candidatePlaces = filterPlacesForDestination(context.destination, context.places)
+        if (candidatePlaces.isEmpty()) {
+            throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "PLACE_CANDIDATE_EMPTY", "목적지에 맞는 일정 생성 후보 장소가 부족합니다.")
         }
 
         val analysis = analyzeGroup(context.members)
-        val slotTemplate = buildSlotTemplate(context.tripDate, analysis, context.members.size)
+        val slotTemplate = buildSlotTemplate(window, analysis, context.members.size)
         val baseShapes = buildIndividualSlotShapes(slotTemplate, analysis, context.members)
         val averageVector = getAverageScores(context.members)
 
@@ -97,7 +98,7 @@ class ConsensusService(
                     label = "개성형",
                     summary = "각자의 취향이 살아있는 교대 배분 일정",
                     targets = baseShapes.map { buildIndividualTarget(it, analysis, context.members, averageVector) },
-                    places = context.places,
+                    places = candidatePlaces,
                     threshold = 60,
                     preferHiddenGem = false,
                     members = context.members,
@@ -122,7 +123,7 @@ class ConsensusService(
                             endTime = it.endTime,
                         )
                     },
-                    places = context.places,
+                    places = candidatePlaces,
                     threshold = 65,
                     preferHiddenGem = false,
                     members = context.members,
@@ -135,9 +136,9 @@ class ConsensusService(
                 materializeOption(
                     optionType = ScheduleOptionType.DISCOVERY,
                     label = "지역 발굴형",
-                    summary = "충남 인구감소지역 숨은 명소 중심 탐험 일정",
+                    summary = "${destinationLabel(context.destination)} 숨은 명소 중심 탐험 일정",
                     targets = baseShapes.map { buildIndividualTarget(it, analysis, context.members, averageVector) },
-                    places = context.places,
+                    places = candidatePlaces,
                     threshold = 55,
                     preferHiddenGem = true,
                     members = context.members,
@@ -155,6 +156,75 @@ class ConsensusService(
         }
     }
 
+    private fun parseScheduleWindow(tripDate: String, startTime: String, endTime: String): ScheduleWindow {
+        val date = runCatching { LocalDate.parse(tripDate) }
+            .getOrElse { throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "tripDate는 yyyy-MM-dd 형식이어야 합니다.") }
+        val start = parseScheduleTime(startTime, "startTime")
+        val end = parseScheduleTime(endTime, "endTime")
+        val startMinutes = start.hour * 60 + start.minute
+        val endMinutes = end.hour * 60 + end.minute
+        if (endMinutes <= startMinutes) {
+            throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "endTime은 startTime보다 늦어야 합니다.")
+        }
+        if (endMinutes - startMinutes < 60) {
+            throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "일정 생성 시간 범위는 최소 1시간 이상이어야 합니다.")
+        }
+        return ScheduleWindow(date, startMinutes, endMinutes)
+    }
+
+    private fun parseScheduleTime(value: String, fieldName: String): LocalTime {
+        return try {
+            LocalTime.parse(value.trim(), DateTimeFormatter.ofPattern("H:mm"))
+        } catch (ex: DateTimeParseException) {
+            throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "${fieldName}은 HH:mm 형식이어야 합니다.")
+        }
+    }
+
+    private fun filterPlacesForDestination(destination: String, places: List<PlaceCandidate>): List<PlaceCandidate> {
+        val tokens = destinationSearchTokens(destination)
+        if (tokens.isEmpty()) return places
+        return places.filter { place ->
+            val searchable = listOf(place.name, place.address, place.metadataTags?.get("region")?.toString(), place.metadataTags?.get("area")?.toString())
+                .filterNotNull()
+                .joinToString(" ")
+                .let(::normalizeRegionText)
+            tokens.any { token -> searchable.contains(token) }
+        }
+    }
+
+    private fun destinationSearchTokens(destination: String): Set<String> {
+        val normalized = normalizeRegionText(destination)
+        if (normalized.isBlank() || normalized in setOf("전국", "전체", "all")) return emptySet()
+
+        val shortToFull = mapOf(
+            "충남" to "충청남도",
+            "충북" to "충청북도",
+            "전북" to "전라북도",
+            "전남" to "전라남도",
+            "경북" to "경상북도",
+            "경남" to "경상남도",
+        )
+        val fullToShort = shortToFull.entries.associate { (shortName, fullName) -> fullName to shortName }
+        val expanded = shortToFull.entries.fold(normalized) { acc, (shortName, fullName) -> acc.replace(shortName, fullName) }
+        val shortened = fullToShort.entries.fold(normalized) { acc, (fullName, shortName) -> acc.replace(fullName, shortName) }
+
+        return buildSet {
+            add(normalized)
+            add(expanded)
+            add(shortened)
+            shortToFull[normalized]?.let { add(normalizeRegionText(it)) }
+            fullToShort[normalized]?.let { add(normalizeRegionText(it)) }
+        }.filter { it.isNotBlank() }.toSet()
+    }
+
+    private fun destinationLabel(destination: String): String {
+        return destination.trim().ifBlank { "지역" }
+    }
+
+    private fun normalizeRegionText(value: String): String {
+        return value.lowercase().replace(Regex("\\s+"), "")
+    }
+
     private fun classifySeverity(gap: Int): ConflictSeverity {
         return when {
             gap <= 20 -> ConflictSeverity.COMMON
@@ -165,28 +235,32 @@ class ConsensusService(
     }
 
     private fun buildSlotTemplate(
-        tripDate: String,
+        window: ScheduleWindow,
         analysis: GroupAnalysis,
         memberCount: Int,
     ): List<SlotTemplate> {
-        val slotCount = when {
+        val desiredSlotCount = when {
             analysis.criticalAxes.isNotEmpty() || memberCount >= 4 -> 7
             analysis.conflictAxes.size >= 2 || analysis.conflictAxes.any { it.severity == ConflictSeverity.MODERATE } -> 6
             else -> 5
         }
+        val maxSlotsByWindow = (window.totalMinutes / 60).coerceAtLeast(1)
+        val slotCount = desiredSlotCount.coerceAtMost(maxSlotsByWindow)
+        val weights = SLOT_TEMPLATES[slotCount] ?: List(slotCount) { 1 }
+        val weightTotal = weights.sum().toDouble()
+        val offsets = weights.runningFold(0) { acc, weight -> acc + weight }
+            .map { ((it / weightTotal) * window.totalMinutes).roundToInt() }
 
-        val durations = SLOT_TEMPLATES[slotCount] ?: SLOT_TEMPLATES[5]!!
-        var currentMinutes = 9 * 60
-
-        return durations.mapIndexed { index, duration ->
-            val startTime = toSeoulInstant(tripDate, currentMinutes)
-            currentMinutes += duration
-            val endTime = toSeoulInstant(tripDate, currentMinutes)
+        return (0 until slotCount).map { index ->
+            val startOffset = offsets[index]
+            val endOffset = if (index == slotCount - 1) window.totalMinutes else offsets[index + 1]
+            val startMinutes = window.startMinutes + startOffset
+            val endMinutes = window.startMinutes + endOffset.coerceAtLeast(startOffset + 1)
             SlotTemplate(
                 orderIndex = index + 1,
-                duration = duration,
-                startTime = startTime,
-                endTime = endTime,
+                duration = endMinutes - startMinutes,
+                startTime = toSeoulInstant(window.tripDate.toString(), startMinutes),
+                endTime = toSeoulInstant(window.tripDate.toString(), endMinutes),
             )
         }
     }
@@ -771,6 +845,14 @@ class ConsensusService(
             ScoreAxis.BUDGET -> scores.budget
             ScoreAxis.THEME -> scores.theme
         }
+    }
+
+    data class ScheduleWindow(
+        val tripDate: LocalDate,
+        val startMinutes: Int,
+        val endMinutes: Int,
+    ) {
+        val totalMinutes: Int = endMinutes - startMinutes
     }
 
     data class GroupAnalysis(
