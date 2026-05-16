@@ -6,7 +6,6 @@ import com.tripsync.common.dto.ApiResponse
 import com.tripsync.common.exception.DomainException
 import com.tripsync.domain.entity.*
 import com.tripsync.domain.enums.ScheduleOptionType
-import com.tripsync.domain.enums.TripRoomStatus
 import com.tripsync.domain.enums.YnFlag
 import com.tripsync.domain.repository.*
 import com.tripsync.web.dto.GenerateScheduleDto
@@ -24,56 +23,19 @@ import java.time.ZoneId
 class ScheduleService(
     private val scheduleRepository: ScheduleRepository,
     private val scheduleSlotRepository: ScheduleSlotRepository,
-    private val satisfactionScoreRepository: SatisfactionScoreRepository,
-    private val roomMemberProfileRepository: RoomMemberProfileRepository,
     private val placeRepository: PlaceRepository,
-    private val userRepository: UserRepository,
     private val consensusService: ConsensusService,
+    private val generationPersistenceService: ScheduleGenerationPersistenceService,
     private val personaValidationService: PersonaValidationService,
     private val accessPolicy: ScheduleAccessPolicy,
     private val responseMapper: ScheduleResponseMapper,
 ) {
     private val logger = KotlinLogging.logger {}
 
-    @Transactional
     fun generateSchedule(roomId: Long, hostId: Long, dto: GenerateScheduleDto): ApiResponse<Map<String, Any?>> {
-        accessPolicy.validateHost(roomId, hostId)
-        val room = accessPolicy.getActiveRoom(roomId)
-        val profiles = roomMemberProfileRepository.findAllByRoomIdAndDelYn(roomId, YnFlag.N)
-            .sortedBy { it.createdAt }
-        if (profiles.size < 2) {
-            throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "ROOM_NOT_READY", "일정 생성 가능한 상태가 아닙니다.")
-        }
-
-        val members = profiles.mapIndexed { index, profile ->
-            MemberSnapshot(
-                userId = profile.user.id,
-                nickname = profile.user.nickname,
-                scores = AxisScores(
-                    mobility = profile.mobilityScore,
-                    photo = profile.photoScore,
-                    budget = profile.budgetScore,
-                    theme = profile.themeScore,
-                ),
-                joinedOrder = index,
-            )
-        }
-
-        val places = placeRepository.findByDelYn(YnFlag.N)
-        val placeCandidates = places.map {
-            PlaceCandidate(
-                id = it.id,
-                name = it.name,
-                address = it.address,
-                category = it.category,
-                mobilityScore = it.mobilityScore,
-                photoScore = it.photoScore,
-                budgetScore = it.budgetScore,
-                themeScore = it.themeScore,
-                metadataTags = it.metadataTags,
-                operatingHours = it.operatingHours,
-            )
-        }
+        val generationContext = generationPersistenceService.loadGenerationContext(roomId, hostId)
+        val members = generationContext.members
+        val placesById = generationContext.placesById
 
         val context = OptionContext(
             roomId = roomId,
@@ -82,28 +44,28 @@ class ScheduleService(
             startTime = dto.startTime,
             endTime = dto.endTime,
             members = members,
-            places = placeCandidates,
+            places = generationContext.places,
         )
 
         val options = runBlocking { consensusService.buildScheduleOptions(context) }
-        val placesById = places.associateBy { it.id }
         val personaValidationByType = safePersonaValidationByType(options, members, placesById)
-        val version = (scheduleRepository.findTopByRoomIdAndDelYnOrderByVersionDesc(room.id, YnFlag.N)?.version ?: 0) + 1
-        val saved = options.map { option ->
-            saveScheduleOption(room, version, dto, option, personaValidationByType[option.optionType])
-        }
-        room.status = TripRoomStatus.COMPLETED
+        val savedGeneration = generationPersistenceService.saveGeneratedOptions(
+            roomId = roomId,
+            dto = dto,
+            options = options,
+            personaValidationByType = personaValidationByType,
+        )
 
         val memberNicknames = members.associate { it.userId to it.nickname }
         return ApiResponse.ok(
             mapOf(
                 "roomId" to roomId,
-                "version" to version,
-                "options" to saved.map { (schedule, option) ->
+                "version" to savedGeneration.version,
+                "options" to savedGeneration.options.map { saved ->
                     responseMapper.formatGeneratedOption(
-                        scheduleId = schedule.id,
-                        option = option,
-                        personaValidation = schedule.personaValidation,
+                        scheduleId = saved.scheduleId,
+                        option = saved.option,
+                        personaValidation = saved.personaValidation,
                         memberNicknames = memberNicknames,
                         placesById = placesById,
                     )
@@ -240,12 +202,10 @@ class ScheduleService(
         )
     }
 
-    @Transactional
     fun regenerateSchedule(scheduleId: Long, userId: Long, dto: RegenerateScheduleDto): ApiResponse<Map<String, Any?>> {
-        val existing = accessPolicy.getActiveSchedule(scheduleId)
-        accessPolicy.validateHost(existing.room.id, userId)
+        val roomId = generationPersistenceService.getRoomIdForRegeneration(scheduleId, userId)
         val generated = generateSchedule(
-            existing.room.id,
+            roomId,
             userId,
             GenerateScheduleDto(
                 destination = dto.destination,
@@ -273,69 +233,6 @@ class ScheduleService(
     fun getPublicShareSchedule(scheduleId: Long): ApiResponse<Map<String, Any?>> {
         val schedule = accessPolicy.getActiveSchedule(scheduleId)
         return ApiResponse.ok(responseMapper.formatStoredSchedule(schedule))
-    }
-
-    private fun saveScheduleOption(
-        room: TripRoom,
-        version: Int,
-        dto: GenerateScheduleDto,
-        option: ScheduleOptionDraft,
-        personaValidation: Map<String, Any>?,
-    ): Pair<Schedule, ScheduleOptionDraft> {
-        val schedule = scheduleRepository.save(
-            Schedule(
-                room = room,
-                version = version,
-                optionType = option.optionType,
-                generationInput = mapOf(
-                    "destination" to dto.destination,
-                    "tripDate" to dto.tripDate,
-                    "startTime" to dto.startTime,
-                    "endTime" to dto.endTime,
-                ),
-                summary = option.summary,
-                groupSatisfaction = option.groupSatisfaction,
-                personaValidation = personaValidation,
-                llmProvider = option.llmProvider,
-            )
-        )
-
-        option.slots.forEach { slot ->
-            val place = placeRepository.findById(slot.placeId)
-                .orElseThrow { DomainException(HttpStatus.NOT_FOUND, "PLACE_NOT_FOUND", "장소를 찾을 수 없습니다.") }
-            val targetUser = slot.targetUserId?.let { userRepository.findById(it).orElse(null) }
-            scheduleSlotRepository.save(
-                ScheduleSlot(
-                    schedule = schedule,
-                    startTime = slot.startTime,
-                    endTime = slot.endTime,
-                    place = place,
-                    slotType = slot.slotType,
-                    targetUser = targetUser,
-                    reasonAxis = slot.reasonAxis,
-                    reasonText = slot.reasonText,
-                    orderIndex = slot.orderIndex,
-                )
-            )
-        }
-
-        option.satisfactionByUser.forEach { sat ->
-            val user = userRepository.findById(sat.userId)
-                .orElseThrow { DomainException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다: ${sat.userId}") }
-            satisfactionScoreRepository.save(
-                SatisfactionScore(
-                    schedule = schedule,
-                    user = user,
-                    score = sat.score,
-                    breakdown = mapOf(
-                        "overall" to sat.score,
-                        "byAxis" to sat.breakdown.byAxis.mapKeys { it.key.name.lowercase() },
-                    ),
-                )
-            )
-        }
-
-        return schedule to option
     }
 
     private fun safePersonaValidationByType(
