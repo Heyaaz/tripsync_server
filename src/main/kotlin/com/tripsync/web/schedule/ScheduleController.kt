@@ -1,9 +1,9 @@
 package com.tripsync.web.schedule
 
-import com.tripsync.application.auth.CustomUserDetailsService
 import com.tripsync.application.schedule.ScheduleService
 import com.tripsync.common.dto.ApiResponse
-import com.tripsync.common.exception.DomainException
+import com.tripsync.common.security.CurrentUser
+import com.tripsync.domain.entity.User
 import com.tripsync.web.dto.AddScheduleSlotDto
 import com.tripsync.web.dto.ConfirmScheduleDto
 import com.tripsync.web.dto.GenerateScheduleDto
@@ -11,13 +11,18 @@ import com.tripsync.web.dto.RegenerateScheduleDto
 import com.tripsync.web.dto.ReorderScheduleSlotsDto
 import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
-import org.springframework.security.core.context.SecurityContextHolder
-import org.springframework.web.bind.annotation.*
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PatchMapping
+import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestParam
+import org.springframework.web.bind.annotation.ResponseStatus
+import org.springframework.web.bind.annotation.RestController
 
 @RestController
 class ScheduleController(
     private val scheduleService: ScheduleService,
-    private val userDetailsService: CustomUserDetailsService,
 ) {
 
     @PostMapping("/rooms/{roomId}/generate-schedule")
@@ -25,8 +30,9 @@ class ScheduleController(
     fun generateSchedule(
         @PathVariable roomId: Long,
         @Valid @RequestBody dto: GenerateScheduleDto,
+        @CurrentUser user: User,
     ): ApiResponse<Map<String, Any?>> {
-        return scheduleService.generateSchedule(roomId, currentUser().id, dto)
+        return scheduleService.generateSchedule(roomId, user.id, dto)
     }
 
     @PostMapping("/schedules/rooms/{roomId}/generate")
@@ -34,28 +40,31 @@ class ScheduleController(
     fun generateScheduleCompat(
         @PathVariable roomId: Long,
         @Valid @RequestBody dto: GenerateScheduleDto,
-    ): ApiResponse<Map<String, Any?>> = generateSchedule(roomId, dto)
+        @CurrentUser user: User,
+    ): ApiResponse<Map<String, Any?>> = generateSchedule(roomId, dto, user)
 
     @PostMapping("/rooms/{roomId}/confirm-schedule")
     @ResponseStatus(HttpStatus.CREATED)
     fun confirmSchedule(
         @PathVariable roomId: Long,
         @Valid @RequestBody dto: ConfirmScheduleDto,
+        @CurrentUser user: User,
     ): ApiResponse<Map<String, Any?>> {
-        return scheduleService.confirmSchedule(roomId, currentUser().id, dto.optionType)
+        return scheduleService.confirmSchedule(roomId, user.id, dto.optionType)
     }
 
     @GetMapping("/schedules/{scheduleId}")
-    fun getSchedule(@PathVariable scheduleId: Long): ApiResponse<Map<String, Any?>> {
-        return scheduleService.getSchedule(scheduleId, currentUser().id)
+    fun getSchedule(@PathVariable scheduleId: Long, @CurrentUser user: User): ApiResponse<Map<String, Any?>> {
+        return scheduleService.getSchedule(scheduleId, user.id)
     }
 
     @GetMapping("/schedules/{scheduleId}/places/search")
     fun searchSchedulePlaces(
         @PathVariable scheduleId: Long,
         @RequestParam(required = false, defaultValue = "") query: String,
+        @CurrentUser user: User,
     ): ApiResponse<Map<String, Any?>> {
-        return scheduleService.searchPlacesForSchedule(scheduleId, currentUser().id, query)
+        return scheduleService.searchPlacesForSchedule(scheduleId, user.id, query)
     }
 
     @PostMapping("/schedules/{scheduleId}/slots")
@@ -63,16 +72,18 @@ class ScheduleController(
     fun addScheduleSlot(
         @PathVariable scheduleId: Long,
         @Valid @RequestBody dto: AddScheduleSlotDto,
+        @CurrentUser user: User,
     ): ApiResponse<Map<String, Any?>> {
-        return scheduleService.addScheduleSlot(scheduleId, currentUser().id, dto.placeId)
+        return scheduleService.addScheduleSlot(scheduleId, user.id, dto.placeId)
     }
 
     @PatchMapping("/schedules/{scheduleId}/slots/order")
     fun reorderScheduleSlots(
         @PathVariable scheduleId: Long,
         @Valid @RequestBody dto: ReorderScheduleSlotsDto,
+        @CurrentUser user: User,
     ): ApiResponse<Map<String, Any?>> {
-        return scheduleService.reorderScheduleSlots(scheduleId, currentUser().id, dto.slotIds)
+        return scheduleService.reorderScheduleSlots(scheduleId, user.id, dto.slotIds)
     }
 
     @PostMapping("/schedules/{scheduleId}/regenerate")
@@ -80,19 +91,13 @@ class ScheduleController(
     fun regenerateSchedule(
         @PathVariable scheduleId: Long,
         @Valid @RequestBody dto: RegenerateScheduleDto,
+        @CurrentUser user: User,
     ): ApiResponse<Map<String, Any?>> {
-        return scheduleService.regenerateSchedule(scheduleId, currentUser().id, dto)
+        return scheduleService.regenerateSchedule(scheduleId, user.id, dto)
     }
 
     @GetMapping("/share/schedules/{scheduleId}")
     fun getPublicShareSchedule(@PathVariable scheduleId: Long): ApiResponse<Map<String, Any?>> {
         return scheduleService.getPublicShareSchedule(scheduleId)
-    }
-
-    private fun currentUser(): com.tripsync.domain.entity.User {
-        val auth = SecurityContextHolder.getContext().authentication
-        val userId = auth?.name?.toLongOrNull()
-            ?: throw DomainException(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "로그인이 필요합니다.")
-        return userDetailsService.loadUserEntity(userId)
     }
 }
