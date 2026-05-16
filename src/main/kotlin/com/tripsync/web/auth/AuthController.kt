@@ -1,12 +1,11 @@
 package com.tripsync.web.auth
 
-import com.tripsync.application.auth.CustomUserDetailsService
 import com.tripsync.application.auth.GuestSessionService
 import com.tripsync.application.auth.JwtAuthenticationFilter
 import com.tripsync.application.auth.JwtTokenProvider
 import com.tripsync.application.auth.OAuthSessionService
 import com.tripsync.common.dto.ApiResponse
-import com.tripsync.common.exception.DomainException
+import com.tripsync.common.security.CurrentUser
 import com.tripsync.domain.entity.User
 import com.tripsync.domain.enums.AuthProvider
 import com.tripsync.domain.enums.YnFlag
@@ -19,7 +18,6 @@ import jakarta.validation.Valid
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseCookie
-import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.web.bind.annotation.*
 import java.time.Duration
@@ -30,7 +28,6 @@ class AuthController(
     private val jwtTokenProvider: JwtTokenProvider,
     private val userRepository: UserRepository,
     private val passwordEncoder: PasswordEncoder,
-    private val userDetailsService: CustomUserDetailsService,
     private val guestSessionService: GuestSessionService,
     private val oAuthSessionService: OAuthSessionService,
 ) {
@@ -79,8 +76,7 @@ class AuthController(
     }
 
     @GetMapping("/me")
-    fun me(): ApiResponse<Map<String, Any>> {
-        val user = currentUser()
+    fun me(@CurrentUser user: User): ApiResponse<Map<String, Any>> {
         return authSuccess(user, null)
     }
 
@@ -158,13 +154,6 @@ class AuthController(
         "authProvider" to user.authProvider.name.lowercase(),
         "isGuest" to user.isGuest,
     )
-
-    private fun currentUser(): User {
-        val auth = SecurityContextHolder.getContext().authentication
-        val userId = auth?.name?.toLongOrNull()
-            ?: throw DomainException(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "로그인이 필요합니다.")
-        return userDetailsService.loadUserEntity(userId)
-    }
 
     private fun sessionCookie(token: String): ResponseCookie = ResponseCookie
         .from(JwtAuthenticationFilter.SESSION_COOKIE_NAME, token)
