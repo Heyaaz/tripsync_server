@@ -69,6 +69,17 @@ tourapi:
   mobile-os: ${TOUR_API_MOBILE_OS:ETC}
   mobile-app: ${TOUR_API_MOBILE_APP:TripSync}
   response-type: ${TOUR_API_RESPONSE_TYPE:json}
+  sync:
+    enabled: ${TOUR_API_SYNC_ENABLED:true}
+    cron: ${TOUR_API_SYNC_CRON:0 0 3 * * *}
+    area-code: ${TOUR_API_SYNC_AREA_CODE:34}
+    content-type-ids: ${TOUR_API_SYNC_CONTENT_TYPE_IDS:12,14,15,28,32,38,39}
+    num-of-rows: ${TOUR_API_SYNC_NUM_OF_ROWS:100}
+    max-pages: ${TOUR_API_SYNC_MAX_PAGES:1}
+    retry-max-attempts: ${TOUR_API_SYNC_RETRY_MAX_ATTEMPTS:3}
+    retry-backoff-millis: ${TOUR_API_SYNC_RETRY_BACKOFF_MILLIS:500}
+    request-interval-millis: ${TOUR_API_SYNC_REQUEST_INTERVAL_MILLIS:0}
+    enrich-limit: ${TOUR_API_ENRICH_LIMIT:50}
 
 api:
   base-url: ${API_BASE_URL:http://localhost:8080/api}

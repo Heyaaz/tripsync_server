@@ -17,7 +17,7 @@ class TourApiController(
     private val tourApiBatchService: TourApiBatchService,
 ) {
     @PostMapping("/sync/chungnam")
-    fun syncChungnam(@CurrentUser user: User): ApiResponse<Map<String, Any>> {
+    fun syncChungnam(@CurrentUser user: User): ApiResponse<Map<String, Any?>> {
         return tourApiBatchService.syncChungnamPlaces(user)
     }
 
@@ -25,7 +25,7 @@ class TourApiController(
     fun enrichChungnam(
         @RequestBody(required = false) dto: EnrichPlacesDto?,
         @CurrentUser user: User,
-    ): ApiResponse<Map<String, Any>> {
+    ): ApiResponse<Map<String, Any?>> {
         return tourApiBatchService.enrichChungnamPlaces(user, dto?.limit ?: 50)
     }
 }

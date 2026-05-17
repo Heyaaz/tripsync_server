@@ -3,7 +3,6 @@ package com.tripsync.infrastructure.tourapi
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.tripsync.domain.entity.Place
-import com.tripsync.domain.repository.PlaceRepository
 import kotlinx.coroutines.reactive.awaitSingle
 import mu.KotlinLogging
 import org.springframework.beans.factory.annotation.Value
@@ -16,7 +15,6 @@ import java.math.BigDecimal
 class TourApiClient(
     private val webClient: WebClient,
     private val objectMapper: ObjectMapper,
-    private val placeRepository: PlaceRepository,
     @Value("\${tourapi.key:}")
     private val apiKey: String,
     @Value("\${tourapi.base-url:https://apis.data.go.kr/B551011/KorService2}")
@@ -30,7 +28,7 @@ class TourApiClient(
 ) {
     private val logger = KotlinLogging.logger {}
 
-    suspend fun fetchAreaBasedList(areaCode: String = "34", sigunguCode: String? = null, pageNo: Int = 1, contentTypeId: String? = null): List<Place> {
+    suspend fun fetchAreaBasedList(areaCode: String = "34", sigunguCode: String? = null, pageNo: Int = 1, contentTypeId: String? = null, numOfRows: Int = 100): List<Place> {
         if (apiKey.isBlank()) {
             logger.warn { "TourAPI key not configured" }
             return emptyList()
@@ -38,7 +36,7 @@ class TourApiClient(
 
         val uriBuilder = org.springframework.web.util.UriComponentsBuilder.fromHttpUrl("$baseUrl/areaBasedList2")
             .queryParam("serviceKey", apiKey)
-            .queryParam("numOfRows", 100)
+            .queryParam("numOfRows", numOfRows.coerceIn(1, 500))
             .queryParam("pageNo", pageNo)
             .queryParam("MobileOS", mobileOs)
             .queryParam("MobileApp", mobileApp)
@@ -109,9 +107,8 @@ class TourApiClient(
 
     private fun parsePlace(item: JsonNode): Place {
         val contentId = item.path("contentid").asText()
-        val existing = placeRepository.findByTourApiId(contentId)
 
-        val place = existing ?: Place(
+        val place = Place(
             tourApiId = contentId,
             name = item.path("title").asText(),
             address = item.path("addr1").asText(""),
@@ -127,6 +124,11 @@ class TourApiClient(
                 "contentTypeId" to item.path("contenttypeid").asText(),
                 "areaCode" to item.path("areacode").asText(),
                 "sigunguCode" to item.path("sigungucode").asText(),
+                "sourceCreatedTime" to item.path("createdtime").asText(),
+                "sourceModifiedTime" to item.path("modifiedtime").asText(),
+                "categoryCode1" to item.path("cat1").asText(),
+                "categoryCode2" to item.path("cat2").asText(),
+                "categoryCode3" to item.path("cat3").asText(),
             ),
         )
 
