@@ -274,15 +274,25 @@ class RoomService(
     }
 
     private fun normalizeRoomName(roomName: String?, destination: String): String {
-        val normalized = roomName?.trim()?.takeIf { it.isNotBlank() } ?: "${destination.trim()} 여행 계획"
-        if (normalized.length > 100) {
+        val normalized = roomName?.trim()?.takeIf { it.isNotBlank() } ?: defaultRoomName(destination)
+        if (normalized.length > ROOM_NAME_MAX_LENGTH) {
             throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_REQUEST", "방 이름은 100자 이하여야 합니다.")
         }
         return normalized
     }
 
+    private fun defaultRoomName(destination: String): String {
+        val destinationLimit = ROOM_NAME_MAX_LENGTH - ROOM_NAME_SUFFIX.length
+        return destination.trim().take(destinationLimit) + ROOM_NAME_SUFFIX
+    }
+
     private fun generateShareCode(): String {
         val suffix = UUID.randomUUID().toString().replace("-", "").take(5).uppercase()
         return "CNAM${LocalDate.now().year.toString().takeLast(2)}$suffix"
+    }
+
+    private companion object {
+        const val ROOM_NAME_MAX_LENGTH = 100
+        const val ROOM_NAME_SUFFIX = " 여행 계획"
     }
 }
