@@ -71,8 +71,10 @@ data class ScheduleOptionDraft(
     val slots: List<ScheduleSlotDraft>,
     val satisfactionByUser: List<SatisfactionDraft>,
     val llmProvider: String,
+    val llmAttemptedProvider: String,
     val llmLatencyMs: Long?,
     val fallbackUsed: Boolean,
+    val llmFallbackReason: String?,
 )
 
 data class OptionContext(

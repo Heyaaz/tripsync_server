@@ -488,7 +488,7 @@ class ConsensusService(
             )
         }
 
-        val llmRefined = llmService.refineScheduleOption(
+        val llmAttempt = llmService.refineScheduleOption(
             optionType = optionType,
             label = label,
             summary = summary,
@@ -498,6 +498,7 @@ class ConsensusService(
             members = members.map { MemberRef(it.userId, it.nickname) },
             slotPlan = shortlistedPerSlot,
         )
+        val llmRefined = llmAttempt.result
 
         val finalSummary = llmRefined?.summary ?: summary
         val placesById = places.associateBy { it.id }
@@ -531,7 +532,7 @@ class ConsensusService(
         val groupSatisfaction = maxOf(threshold, satisfactionByUser.minOf { it.score })
 
         logger.info {
-            "schedule_option optionType=$optionType roomId=${context.roomId} provider=${llmRefined?.provider ?: DETERMINISTIC_PROVIDER} latencyMs=${llmRefined?.latencyMs ?: 0} fallbackUsed=${llmRefined == null} groupSatisfaction=$groupSatisfaction"
+            "schedule_option optionType=$optionType roomId=${context.roomId} provider=${llmRefined?.provider ?: DETERMINISTIC_PROVIDER} attemptedProvider=${llmAttempt.attemptedProvider} latencyMs=${llmAttempt.latencyMs ?: 0} fallbackUsed=${llmAttempt.fallbackUsed} fallbackReason=${llmAttempt.fallbackReason?.code ?: "none"} groupSatisfaction=$groupSatisfaction"
         }
 
         return ScheduleOptionDraft(
@@ -542,8 +543,10 @@ class ConsensusService(
             slots = finalSlots,
             satisfactionByUser = satisfactionByUser,
             llmProvider = llmRefined?.provider ?: DETERMINISTIC_PROVIDER,
-            llmLatencyMs = llmRefined?.latencyMs,
-            fallbackUsed = llmRefined == null,
+            llmAttemptedProvider = llmAttempt.attemptedProvider,
+            llmLatencyMs = llmAttempt.latencyMs,
+            fallbackUsed = llmAttempt.fallbackUsed,
+            llmFallbackReason = llmAttempt.fallbackReason?.code,
         )
     }
 

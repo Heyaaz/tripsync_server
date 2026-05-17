@@ -106,6 +106,13 @@ class ScheduleGenerationPersistenceService(
                         "endTime" to dto.endTime,
                         "tripStartDate" to (dto.tripStartDate ?: dto.tripDate),
                         "tripEndDate" to (dto.tripEndDate ?: dto.tripDate),
+                        "llm" to mapOf(
+                            "provider" to option.llmProvider,
+                            "attemptedProvider" to option.llmAttemptedProvider,
+                            "latencyMs" to option.llmLatencyMs,
+                            "fallbackUsed" to option.fallbackUsed,
+                            "fallbackReason" to option.llmFallbackReason,
+                        ),
                     ),
                     summary = option.summary,
                     groupSatisfaction = option.groupSatisfaction,
