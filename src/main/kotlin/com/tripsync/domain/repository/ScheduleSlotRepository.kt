@@ -9,6 +9,7 @@ import org.springframework.stereotype.Repository
 @Repository
 interface ScheduleSlotRepository : JpaRepository<ScheduleSlot, Long> {
     fun findAllByScheduleIdAndDelYn(scheduleId: Long, delYn: YnFlag): List<ScheduleSlot>
+    fun findByIdAndDelYn(id: Long, delYn: YnFlag): ScheduleSlot?
 
     @Query("select slot.place.id from ScheduleSlot slot where slot.schedule.id = :scheduleId and slot.delYn = :delYn")
     fun findActivePlaceIdsByScheduleId(scheduleId: Long, delYn: YnFlag = YnFlag.N): List<Long>

@@ -82,6 +82,14 @@ class ScheduleService(
         return ApiResponse.ok(responseMapper.formatStoredSchedule(schedule))
     }
 
+    @Transactional(readOnly = true)
+    fun getConfirmedSchedule(roomId: Long, userId: Long): ApiResponse<Map<String, Any?>> {
+        accessPolicy.validateRoomMember(roomId, userId)
+        val schedule = scheduleRepository.findConfirmedByRoomId(roomId, YnFlag.N).firstOrNull()
+            ?: throw DomainException(HttpStatus.NOT_FOUND, "SCHEDULE_NOT_FOUND", "확정된 일정이 없습니다.")
+        return ApiResponse.ok(responseMapper.formatStoredSchedule(schedule))
+    }
+
 
     @Transactional(readOnly = true)
     fun searchPlacesForSchedule(scheduleId: Long, userId: Long, query: String): ApiResponse<Map<String, Any?>> {
@@ -183,6 +191,7 @@ class ScheduleService(
 
         scheduleRepository.findByRoomIdAndDelYn(roomId, YnFlag.N).forEach { it.isConfirmed = false }
         target.isConfirmed = true
+        target.room.status = com.tripsync.domain.enums.TripRoomStatus.COMPLETED
 
         return ApiResponse.ok(
             mapOf(

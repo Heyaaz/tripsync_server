@@ -124,3 +124,8 @@ data class ReorderScheduleSlotsDto(
 data class AddScheduleSlotDto(
     val placeId: Long,
 )
+
+data class UpdatePhotoCaptionDto(
+    @field:Size(max = 500)
+    val caption: String? = null,
+)

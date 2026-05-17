@@ -1,5 +1,6 @@
 package com.tripsync.application.room
 
+import com.tripsync.application.schedule.ScheduleResponseMapper
 import com.tripsync.common.dto.ApiResponse
 import com.tripsync.common.exception.DomainException
 import com.tripsync.domain.entity.RoomMember
@@ -22,10 +23,12 @@ class RoomService(
     private val roomMemberRepository: RoomMemberRepository,
     private val roomMemberProfileRepository: RoomMemberProfileRepository,
     private val tptiResultRepository: TptiResultRepository,
+    private val scheduleRepository: ScheduleRepository,
+    private val scheduleResponseMapper: ScheduleResponseMapper,
 ) {
 
     @Transactional
-    fun createRoom(host: User, destination: String, tripDate: LocalDate): ApiResponse<Map<String, Any>> {
+    fun createRoom(host: User, destination: String, tripDate: LocalDate): ApiResponse<Map<String, Any?>> {
         if (host.isGuest) {
             throw DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "방장 권한이 필요합니다.")
         }
@@ -64,16 +67,16 @@ class RoomService(
     }
 
     @Transactional(readOnly = true)
-    fun getRoom(roomId: Long, user: User): ApiResponse<Map<String, Any>> {
+    fun getRoom(roomId: Long, user: User): ApiResponse<Map<String, Any?>> {
         validateRoomMember(roomId, user.id)
         val room = getActiveRoom(roomId)
         val memberCount = roomMemberRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N).size
 
-        return ApiResponse.ok(roomSummary(room, memberCount))
+        return ApiResponse.ok(roomSummary(room, memberCount, includeScheduleState = true))
     }
 
     @Transactional(readOnly = true)
-    fun getMyRooms(user: User): ApiResponse<Map<String, Any>> {
+    fun getMyRooms(user: User): ApiResponse<Map<String, Any?>> {
         if (user.isGuest) {
             throw DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "방장 계정으로 로그인해주세요.")
         }
@@ -85,24 +88,24 @@ class RoomService(
             .sortedWith(compareByDescending<TripRoom> { it.createdAt }.thenByDescending { it.id })
             .map { room ->
                 val memberCount = roomMemberRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N).size
-                roomSummary(room, memberCount)
+                roomSummary(room, memberCount, includeScheduleState = false)
             }
 
         return ApiResponse.ok(mapOf("rooms" to rooms))
     }
 
     @Transactional(readOnly = true)
-    fun getShareRoom(shareCode: String): ApiResponse<Map<String, Any>> {
+    fun getShareRoom(shareCode: String): ApiResponse<Map<String, Any?>> {
         val room = tripRoomRepository.findByShareCodeAndDelYn(shareCode, YnFlag.N)
             ?: throw DomainException(HttpStatus.NOT_FOUND, "INVALID_SHARE_CODE", "유효하지 않은 공유 코드입니다.")
         val memberCount = roomMemberRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N).size
         return ApiResponse.ok(
-            roomSummary(room, memberCount) + mapOf("hostNickname" to room.hostUser.nickname)
+            roomSummary(room, memberCount, includeScheduleState = false) + mapOf("hostNickname" to room.hostUser.nickname)
         )
     }
 
     @Transactional
-    fun joinRoom(shareCode: String, tptiResultId: Long?, user: User): ApiResponse<Map<String, Any>> {
+    fun joinRoom(shareCode: String, tptiResultId: Long?, user: User): ApiResponse<Map<String, Any?>> {
         val room = tripRoomRepository.findByShareCodeAndDelYn(shareCode, YnFlag.N)
             ?: throw DomainException(HttpStatus.NOT_FOUND, "INVALID_SHARE_CODE", "유효하지 않은 공유 코드입니다.")
 
@@ -137,7 +140,7 @@ class RoomService(
     }
 
     @Transactional(readOnly = true)
-    fun getMembers(roomId: Long, user: User): ApiResponse<Map<String, Any>> {
+    fun getMembers(roomId: Long, user: User): ApiResponse<Map<String, Any?>> {
         validateRoomMember(roomId, user.id)
         val members = roomMemberRepository.findAllByRoomIdAndDelYn(roomId, YnFlag.N)
         val profilesByUserId = roomMemberProfileRepository.findAllByRoomIdAndDelYn(roomId, YnFlag.N)
@@ -219,18 +222,52 @@ class RoomService(
         }
     }
 
-    private fun roomSummary(room: TripRoom, memberCount: Int): Map<String, Any> = mapOf(
-        "roomId" to room.id,
-        "destination" to room.destination,
-        "tripDate" to room.tripDate.toString(),
-        "tripStartDate" to room.tripDate.toString(),
-        "tripEndDate" to room.tripDate.toString(),
-        "shareCode" to room.shareCode,
-        "status" to room.status.name.lowercase(),
-        "hostUserId" to room.hostUser.id,
-        "memberCount" to memberCount,
-        "createdAt" to room.createdAt.toString(),
-    )
+    private fun roomSummary(room: TripRoom, memberCount: Int, includeScheduleState: Boolean): Map<String, Any?> {
+        val schedules = scheduleRepository.findByRoomIdAndDelYn(room.id, YnFlag.N)
+        val confirmed = schedules
+            .filter { it.isConfirmed }
+            .maxWithOrNull(compareBy<com.tripsync.domain.entity.Schedule> { it.version }.thenBy { it.id })
+        val latestVersion = schedules.maxOfOrNull { it.version }
+        val base = mapOf(
+            "roomId" to room.id,
+            "destination" to room.destination,
+            "tripDate" to room.tripDate.toString(),
+            "tripStartDate" to room.tripDate.toString(),
+            "tripEndDate" to room.tripDate.toString(),
+            "shareCode" to room.shareCode,
+            "status" to room.status.name.lowercase(),
+            "hostUserId" to room.hostUser.id,
+            "memberCount" to memberCount,
+            "createdAt" to room.createdAt.toString(),
+            "hasGeneratedSchedule" to schedules.isNotEmpty(),
+            "confirmedScheduleId" to confirmed?.id,
+            "latestScheduleVersion" to latestVersion,
+        )
+        if (!includeScheduleState) return base
+
+        val latestOptions = latestVersion
+            ?.let { version -> schedules.filter { it.version == version }.sortedBy { it.optionType.ordinal } }
+            .orEmpty()
+        val scheduleState = when {
+            confirmed != null -> mapOf(
+                "status" to "confirmed",
+                "confirmedSchedule" to scheduleResponseMapper.formatStoredSchedule(confirmed),
+                "options" to latestOptions.map { scheduleResponseMapper.formatStoredSchedule(it) },
+            )
+            latestOptions.isNotEmpty() -> mapOf(
+                "status" to "generated",
+                "confirmedSchedule" to null,
+                "options" to latestOptions.map { scheduleResponseMapper.formatStoredSchedule(it) },
+            )
+            else -> mapOf(
+                "status" to "empty",
+                "confirmedSchedule" to null,
+                "options" to emptyList<Map<String, Any?>>(),
+            )
+        }
+
+        return base + mapOf("scheduleState" to scheduleState)
+    }
 
     private fun generateShareCode(): String {
         val suffix = UUID.randomUUID().toString().replace("-", "").take(5).uppercase()

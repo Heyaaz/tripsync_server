@@ -58,6 +58,11 @@ class ScheduleController(
         return scheduleService.getSchedule(scheduleId, user.id)
     }
 
+    @GetMapping("/rooms/{roomId}/confirmed-schedule")
+    fun getConfirmedSchedule(@PathVariable roomId: Long, @CurrentUser user: User): ApiResponse<Map<String, Any?>> {
+        return scheduleService.getConfirmedSchedule(roomId, user.id)
+    }
+
     @GetMapping("/schedules/{scheduleId}/places/search")
     fun searchSchedulePlaces(
         @PathVariable scheduleId: Long,
