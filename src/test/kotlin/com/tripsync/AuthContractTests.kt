@@ -186,8 +186,42 @@ class AuthContractTests(
                 jsonPath("$.data.rooms[0].roomId") { value(secondRoomId.toInt()) }
                 jsonPath("$.data.rooms[1].roomId") { value(firstRoomId.toInt()) }
                 jsonPath("$.data.rooms[0].destination") { value("충청남도") }
+                jsonPath("$.data.rooms[0].roomName") { value("충남 봄 여행") }
                 jsonPath("$.data.rooms[0].memberCount") { value(1) }
             }
+    }
+
+
+    @Test
+    fun `room name fallback preserves suffix within database limit`() {
+        val hostSession = registerSession("host-room-name-fallback@example.com", "방이름-fallback")
+        val destination = "가".repeat(100)
+        val expectedRoomName = "가".repeat(94) + " 여행 계획"
+
+        mockMvc.post("/rooms") {
+            cookie(hostSession)
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"destination":"$destination","tripDate":"${LocalDate.now().plusDays(7)}"}"""
+        }.andExpect {
+            status { isCreated() }
+            jsonPath("$.data.roomName") { value(expectedRoomName) }
+        }
+    }
+
+    @Test
+    fun `explicit room name over database limit is rejected`() {
+        val hostSession = registerSession("host-room-name-too-long@example.com", "방이름-long")
+        val roomName = "나".repeat(101)
+
+        mockMvc.post("/rooms") {
+            cookie(hostSession)
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"destination":"충청남도","tripDate":"${LocalDate.now().plusDays(7)}","roomName":"$roomName"}"""
+        }.andExpect {
+            status { isUnprocessableEntity() }
+            jsonPath("$.success") { value(false) }
+            jsonPath("$.error.code") { value("INVALID_REQUEST") }
+        }
     }
 
     @Test
@@ -229,10 +263,11 @@ class AuthContractTests(
         val response = mockMvc.post("/rooms") {
             cookie(session)
             contentType = MediaType.APPLICATION_JSON
-            content = """{"destination":"충청남도","tripDate":"${LocalDate.now().plusDays(7)}"}"""
+            content = """{"destination":"충청남도","tripDate":"${LocalDate.now().plusDays(7)}","roomName":"충남 봄 여행"}"""
         }.andExpect {
             status { isCreated() }
             jsonPath("$.data.roomId") { value(notNullValue()) }
+            jsonPath("$.data.roomName") { value("충남 봄 여행") }
         }.andReturn().response.contentAsString
 
         return Regex("""\"roomId\":(\d+)""").find(response)!!.groupValues[1].toLong()

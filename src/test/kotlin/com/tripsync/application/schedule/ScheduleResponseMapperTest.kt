@@ -58,6 +58,7 @@ class ScheduleResponseMapperTest {
             hostUser = host,
             shareCode = "ABC123456789",
             destination = "충남",
+            roomName = "충남 여행 계획",
             tripDate = LocalDate.parse("2026-06-01"),
             status = TripRoomStatus.COMPLETED,
         )

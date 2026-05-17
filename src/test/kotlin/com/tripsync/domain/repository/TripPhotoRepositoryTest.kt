@@ -160,6 +160,7 @@ class TripPhotoRepositoryTest(
                 hostUser = host,
                 shareCode = "P${suffix.toString().takeLast(10)}",
                 destination = "충남",
+                roomName = "충남 여행 계획",
                 tripDate = LocalDate.now().minusDays(1),
                 status = TripRoomStatus.COMPLETED,
             )

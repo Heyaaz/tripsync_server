@@ -28,7 +28,7 @@ class RoomService(
 ) {
 
     @Transactional
-    fun createRoom(host: User, destination: String, tripDate: LocalDate): ApiResponse<Map<String, Any?>> {
+    fun createRoom(host: User, destination: String, tripDate: LocalDate, roomName: String? = null): ApiResponse<Map<String, Any?>> {
         if (host.isGuest) {
             throw DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "방장 권한이 필요합니다.")
         }
@@ -36,11 +36,13 @@ class RoomService(
             throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_REQUEST", "tripDate는 오늘 이후여야 합니다.")
         }
 
+        val normalizedRoomName = normalizeRoomName(roomName, destination)
         val room = tripRoomRepository.save(
             TripRoom(
                 hostUser = host,
                 shareCode = generateShareCode(),
                 destination = destination,
+                roomName = normalizedRoomName,
                 tripDate = tripDate,
                 status = TripRoomStatus.WAITING,
             )
@@ -60,6 +62,7 @@ class RoomService(
         return ApiResponse.ok(
             mapOf(
                 "roomId" to room.id,
+                "roomName" to room.roomName,
                 "shareCode" to room.shareCode,
                 "status" to room.status.name.lowercase(),
             )
@@ -230,6 +233,7 @@ class RoomService(
         val latestVersion = schedules.maxOfOrNull { it.version }
         val base = mapOf(
             "roomId" to room.id,
+            "roomName" to room.roomName,
             "destination" to room.destination,
             "tripDate" to room.tripDate.toString(),
             "tripStartDate" to room.tripDate.toString(),
@@ -269,8 +273,26 @@ class RoomService(
         return base + mapOf("scheduleState" to scheduleState)
     }
 
+    private fun normalizeRoomName(roomName: String?, destination: String): String {
+        val normalized = roomName?.trim()?.takeIf { it.isNotBlank() } ?: defaultRoomName(destination)
+        if (normalized.length > ROOM_NAME_MAX_LENGTH) {
+            throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_REQUEST", "방 이름은 100자 이하여야 합니다.")
+        }
+        return normalized
+    }
+
+    private fun defaultRoomName(destination: String): String {
+        val destinationLimit = ROOM_NAME_MAX_LENGTH - ROOM_NAME_SUFFIX.length
+        return destination.trim().take(destinationLimit) + ROOM_NAME_SUFFIX
+    }
+
     private fun generateShareCode(): String {
         val suffix = UUID.randomUUID().toString().replace("-", "").take(5).uppercase()
         return "CNAM${LocalDate.now().year.toString().takeLast(2)}$suffix"
+    }
+
+    private companion object {
+        const val ROOM_NAME_MAX_LENGTH = 100
+        const val ROOM_NAME_SUFFIX = " 여행 계획"
     }
 }
