@@ -74,6 +74,30 @@ class ScheduleServiceTest(
     }
 
 
+
+    @Test
+    fun `confirmed schedule can be loaded by room for returning users`() {
+        val fixture = createFixture()
+
+        val response = scheduleService.getConfirmedSchedule(fixture.schedule.room.id, fixture.host.id).data!!
+
+        assertEquals(fixture.schedule.id, response["id"])
+        assertEquals(true, response["isConfirmed"])
+        assertEquals("balanced", response["optionType"])
+        assertEquals("확정 일정", response["summary"])
+    }
+
+    @Test
+    fun `room without confirmed schedule returns not found`() {
+        val fixture = createFixture(isConfirmed = false)
+
+        val error = assertThrows(DomainException::class.java) {
+            scheduleService.getConfirmedSchedule(fixture.schedule.room.id, fixture.host.id)
+        }
+
+        assertEquals("SCHEDULE_NOT_FOUND", error.code)
+    }
+
     @Test
     fun `unconfirmed schedule cannot be searched or edited`() {
         val fixture = createFixture(isConfirmed = false)
