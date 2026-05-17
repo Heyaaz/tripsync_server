@@ -15,11 +15,28 @@ class LlmService(
         val reason: String,
     )
 
+    enum class FallbackReason(val code: String) {
+        API_KEY_MISSING("api_key_missing"),
+        API_HTTP_ERROR("api_http_error"),
+        API_CALL_FAILED("api_call_failed"),
+        RESPONSE_PARSE_FAILED("response_parse_failed"),
+        RESPONSE_SCHEMA_INVALID("response_schema_invalid"),
+    }
+
     data class RefinementResult(
         val summary: String,
         val provider: String,
         val latencyMs: Long,
         val slots: List<RefinedSlot>,
+    )
+
+    data class RefinementAttempt(
+        val result: RefinementResult?,
+        val attemptedProvider: String,
+        val latencyMs: Long?,
+        val fallbackUsed: Boolean,
+        val fallbackReason: FallbackReason?,
+        val failureDetail: String? = null,
     )
 
     suspend fun refineScheduleOption(
@@ -31,7 +48,7 @@ class LlmService(
         priorityAxes: List<com.tripsync.domain.enums.ScoreAxis>,
         members: List<ConsensusService.MemberRef>,
         slotPlan: List<ConsensusService.SlotShortlist>,
-    ): RefinementResult? {
+    ): RefinementAttempt {
         return openAiClient.refineSchedule(
             optionType = optionType,
             label = label,

@@ -224,7 +224,7 @@ class ScheduleService(
     @Transactional(readOnly = true)
     fun getPublicShareSchedule(scheduleId: Long): ApiResponse<Map<String, Any?>> {
         val schedule = accessPolicy.getActiveSchedule(scheduleId)
-        return ApiResponse.ok(responseMapper.formatStoredSchedule(schedule))
+        return ApiResponse.ok(responseMapper.formatPublicShareSchedule(schedule))
     }
 
     private fun safePersonaValidationByType(

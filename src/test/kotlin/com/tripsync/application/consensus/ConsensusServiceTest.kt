@@ -1,6 +1,7 @@
 package com.tripsync.application.consensus
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import com.tripsync.common.exception.DomainException
 import com.tripsync.domain.entity.AxisScores
 import com.tripsync.infrastructure.llm.OpenAiClient
@@ -20,6 +21,7 @@ class ConsensusServiceTest {
                 objectMapper = ObjectMapper(),
                 apiKey = "",
                 model = "gpt-4o-mini",
+                meterRegistry = SimpleMeterRegistry(),
             )
         )
     )
@@ -44,6 +46,12 @@ class ConsensusServiceTest {
             assertTrue(option.slots.all { it.placeAddress.contains("전라북도") })
         }
         assertTrue(options.last().summary.contains("전북"))
+        options.forEach { option ->
+            assertEquals("deterministic-consensus", option.llmProvider)
+            assertEquals("openai/gpt-4o-mini", option.llmAttemptedProvider)
+            assertTrue(option.fallbackUsed)
+            assertEquals("api_key_missing", option.llmFallbackReason)
+        }
     }
 
     @Test

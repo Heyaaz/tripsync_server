@@ -2,16 +2,21 @@ package com.tripsync.infrastructure.llm
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Timer
 import com.tripsync.application.consensus.ConsensusService
 import com.tripsync.application.consensus.LlmService
 import com.tripsync.domain.enums.ScheduleOptionType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.reactive.awaitSingle
 import mu.KotlinLogging
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Component
 import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.WebClientResponseException
 import org.springframework.web.reactive.function.client.bodyToMono
+import java.util.concurrent.TimeUnit
 
 @Component
 class OpenAiClient(
@@ -21,8 +26,11 @@ class OpenAiClient(
     private val apiKey: String,
     @Value("\${openai.model:gpt-4o-mini}")
     private val model: String,
+    private val meterRegistry: MeterRegistry,
 ) {
     private val logger = KotlinLogging.logger {}
+    private val providerName: String
+        get() = "openai/$model"
 
     suspend fun refineSchedule(
         optionType: ScheduleOptionType,
@@ -33,16 +41,21 @@ class OpenAiClient(
         priorityAxes: List<com.tripsync.domain.enums.ScoreAxis>,
         members: List<ConsensusService.MemberRef>,
         slotPlan: List<ConsensusService.SlotShortlist>,
-    ): LlmService.RefinementResult? {
+    ): LlmService.RefinementAttempt {
         if (apiKey.isBlank()) {
-            logger.warn { "OpenAI API key not configured" }
-            return null
+            recordMetrics(optionType, "fallback", LlmService.FallbackReason.API_KEY_MISSING.code, 0)
+            logger.warn {
+                "llm_refinement outcome=fallback reason=${LlmService.FallbackReason.API_KEY_MISSING.code} provider=$providerName optionType=$optionType roomId=${room.roomId}"
+            }
+            return fallbackAttempt(
+                reason = LlmService.FallbackReason.API_KEY_MISSING,
+                latencyMs = 0,
+                detail = "OpenAI API key not configured",
+            )
         }
 
-        val start = System.currentTimeMillis()
-
+        val startNanos = System.nanoTime()
         val prompt = buildPrompt(optionType, label, summary, room, commonAxes, priorityAxes, members, slotPlan)
-
         val requestBody = mapOf(
             "model" to model,
             "messages" to listOf(
@@ -66,13 +79,82 @@ class OpenAiClient(
                 .bodyToMono<String>()
                 .awaitSingle()
 
-            val latencyMs = System.currentTimeMillis() - start
-            parseResponse(response, latencyMs)
+            val latencyMs = elapsedMillis(startNanos)
+            val parsed = parseResponse(response, latencyMs)
+            validateRefinement(parsed, slotPlan)
+            recordMetrics(optionType, "success", "none", latencyMs)
+            logger.info {
+                "llm_refinement outcome=success provider=$providerName optionType=$optionType roomId=${room.roomId} latencyMs=$latencyMs slots=${parsed.slots.size}"
+            }
+            LlmService.RefinementAttempt(
+                result = parsed,
+                attemptedProvider = providerName,
+                latencyMs = latencyMs,
+                fallbackUsed = false,
+                fallbackReason = null,
+            )
+        } catch (e: LlmParseException) {
+            val latencyMs = elapsedMillis(startNanos)
+            recordMetrics(optionType, "fallback", e.reason.code, latencyMs)
+            logger.warn(e) {
+                "llm_refinement outcome=fallback reason=${e.reason.code} provider=$providerName optionType=$optionType roomId=${room.roomId} latencyMs=$latencyMs"
+            }
+            fallbackAttempt(e.reason, latencyMs, e.message)
+        } catch (e: WebClientResponseException) {
+            val latencyMs = elapsedMillis(startNanos)
+            recordMetrics(optionType, "fallback", LlmService.FallbackReason.API_HTTP_ERROR.code, latencyMs)
+            logger.error(e) {
+                "llm_refinement outcome=fallback reason=${LlmService.FallbackReason.API_HTTP_ERROR.code} provider=$providerName optionType=$optionType roomId=${room.roomId} latencyMs=$latencyMs status=${e.statusCode.value()}"
+            }
+            fallbackAttempt(LlmService.FallbackReason.API_HTTP_ERROR, latencyMs, "HTTP ${e.statusCode.value()}")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            logger.error(e) { "LLM refinement failed" }
-            null
+            val latencyMs = elapsedMillis(startNanos)
+            recordMetrics(optionType, "fallback", LlmService.FallbackReason.API_CALL_FAILED.code, latencyMs)
+            logger.error(e) {
+                "llm_refinement outcome=fallback reason=${LlmService.FallbackReason.API_CALL_FAILED.code} provider=$providerName optionType=$optionType roomId=${room.roomId} latencyMs=$latencyMs"
+            }
+            fallbackAttempt(LlmService.FallbackReason.API_CALL_FAILED, latencyMs, e.javaClass.simpleName)
         }
     }
+
+    private fun elapsedMillis(startNanos: Long): Long {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos).coerceAtLeast(0)
+    }
+
+    private fun recordMetrics(
+        optionType: ScheduleOptionType,
+        outcome: String,
+        reason: String,
+        latencyMs: Long,
+    ) {
+        val tags = listOf(
+            "provider", providerName,
+            "optionType", optionType.name.lowercase(),
+            "outcome", outcome,
+            "reason", reason,
+        )
+        val tagArray = tags.toTypedArray()
+        meterRegistry.counter("tripsync.llm.refinement.calls", *tagArray).increment()
+        Timer.builder("tripsync.llm.refinement.latency")
+            .tags(*tagArray)
+            .register(meterRegistry)
+            .record(latencyMs, TimeUnit.MILLISECONDS)
+    }
+
+    private fun fallbackAttempt(
+        reason: LlmService.FallbackReason,
+        latencyMs: Long,
+        detail: String?,
+    ): LlmService.RefinementAttempt = LlmService.RefinementAttempt(
+        result = null,
+        attemptedProvider = providerName,
+        latencyMs = latencyMs,
+        fallbackUsed = true,
+        fallbackReason = reason,
+        failureDetail = detail,
+    )
 
     private fun buildPrompt(
         optionType: ScheduleOptionType,
@@ -116,27 +198,81 @@ class OpenAiClient(
         """.trimIndent()
     }
 
-    private fun parseResponse(response: String, latencyMs: Long): LlmService.RefinementResult? {
-        val root = objectMapper.readTree(response)
-        val content = root.path("choices").get(0)?.path("message")?.path("content")?.asText()
-            ?: return null
+    internal fun parseResponse(response: String, latencyMs: Long): LlmService.RefinementResult {
+        val root = readJson(response, LlmService.FallbackReason.RESPONSE_PARSE_FAILED)
+        val choices = root.path("choices")
+        if (!choices.isArray || choices.size() == 0) {
+            throw LlmParseException(LlmService.FallbackReason.RESPONSE_SCHEMA_INVALID, "OpenAI response choices missing")
+        }
 
-        val result = objectMapper.readTree(content)
-        val summary = result.path("summary").asText()
-        val slots = result.path("slots").mapNotNull { slot ->
+        val content = choices.get(0)?.path("message")?.path("content")?.asText()?.trim().orEmpty()
+        if (content.isBlank()) {
+            throw LlmParseException(LlmService.FallbackReason.RESPONSE_SCHEMA_INVALID, "OpenAI response content missing")
+        }
+
+        val result = readJson(content, LlmService.FallbackReason.RESPONSE_PARSE_FAILED)
+        val summary = result.path("summary").asText().trim()
+        if (summary.isBlank()) {
+            throw LlmParseException(LlmService.FallbackReason.RESPONSE_SCHEMA_INVALID, "LLM summary missing")
+        }
+
+        val rawSlots = result.path("slots")
+        if (!rawSlots.isArray) {
+            throw LlmParseException(LlmService.FallbackReason.RESPONSE_SCHEMA_INVALID, "LLM slots missing")
+        }
+
+        val slots = rawSlots.mapNotNull { slot ->
             val orderIndex = slot.path("orderIndex").asInt()
             val placeId = slot.path("placeId").asLong()
-            val reason = slot.path("reason").asText()
+            val reason = slot.path("reason").asText().trim()
             if (orderIndex > 0 && placeId > 0) {
-                LlmService.RefinedSlot(orderIndex, placeId, reason)
+                LlmService.RefinedSlot(orderIndex, placeId, reason.ifBlank { "LLM 추천" })
             } else null
+        }
+        if (slots.isEmpty()) {
+            throw LlmParseException(LlmService.FallbackReason.RESPONSE_SCHEMA_INVALID, "LLM slots contain no valid place selection")
         }
 
         return LlmService.RefinementResult(
             summary = summary,
-            provider = "openai/$model",
+            provider = providerName,
             latencyMs = latencyMs,
             slots = slots,
         )
     }
+
+    internal fun validateRefinement(
+        result: LlmService.RefinementResult,
+        slotPlan: List<ConsensusService.SlotShortlist>,
+    ) {
+        val validPlaceIdsByOrder = slotPlan.associate { slot ->
+            slot.orderIndex to slot.candidatePlaces.map { it.id }.toSet()
+        }
+        val expectedOrders = validPlaceIdsByOrder.keys
+        val actualOrders = result.slots.map { it.orderIndex }
+        if (actualOrders.toSet() != expectedOrders || actualOrders.size != expectedOrders.size) {
+            throw LlmParseException(LlmService.FallbackReason.RESPONSE_SCHEMA_INVALID, "LLM slots must contain exactly one selection for every shortlisted slot")
+        }
+
+        val hasInvalidSelection = result.slots.any { slot ->
+            slot.placeId !in validPlaceIdsByOrder.getOrDefault(slot.orderIndex, emptySet())
+        }
+        if (hasInvalidSelection) {
+            throw LlmParseException(LlmService.FallbackReason.RESPONSE_SCHEMA_INVALID, "LLM slots contain place selection outside shortlist")
+        }
+    }
+
+    private fun readJson(value: String, reason: LlmService.FallbackReason): JsonNode {
+        return try {
+            objectMapper.readTree(value)
+        } catch (e: Exception) {
+            throw LlmParseException(reason, "LLM JSON parse failed", e)
+        }
+    }
+
+    internal class LlmParseException(
+        val reason: LlmService.FallbackReason,
+        message: String,
+        cause: Throwable? = null,
+    ) : RuntimeException(message, cause)
 }

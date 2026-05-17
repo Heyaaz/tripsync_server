@@ -25,8 +25,10 @@ class ScheduleResponseMapper(
         "groupSatisfaction" to option.groupSatisfaction,
         "personaValidation" to personaValidation,
         "llmProvider" to option.llmProvider,
+        "llmAttemptedProvider" to option.llmAttemptedProvider,
         "llmLatencyMs" to option.llmLatencyMs,
         "fallbackUsed" to option.fallbackUsed,
+        "llmFallbackReason" to option.llmFallbackReason,
         "slots" to option.slots.sortedBy { it.orderIndex }.map { slot ->
             val place = placesById[slot.placeId]
             mapOf(
@@ -55,6 +57,7 @@ class ScheduleResponseMapper(
     fun formatStoredSchedule(schedule: Schedule): Map<String, Any?> {
         val memberNicknames = roomMemberProfileRepository.findAllByRoomIdAndDelYn(schedule.room.id, YnFlag.N)
             .associate { it.user.id to it.user.nickname }
+        val llmMetadata = formatLlmMetadata(schedule)
         return mapOf(
             "id" to schedule.id,
             "roomId" to schedule.room.id,
@@ -66,7 +69,12 @@ class ScheduleResponseMapper(
             "groupSatisfaction" to schedule.groupSatisfaction,
             "summary" to (schedule.summary ?: ""),
             "personaValidation" to schedule.personaValidation,
-            "slots" to schedule.slots.filter { it.delYn == YnFlag.N }.sortedBy { it.orderIndex }.map { slot ->
+            "llmProvider" to llmMetadata["provider"],
+            "llmAttemptedProvider" to llmMetadata["attemptedProvider"],
+            "llmLatencyMs" to llmMetadata["latencyMs"],
+            "fallbackUsed" to llmMetadata["fallbackUsed"],
+            "llmFallbackReason" to llmMetadata["fallbackReason"],
+            "slots" to schedule.slots.filter { it.delYn == YnFlag.N }.sortedBy { slot -> slot.orderIndex }.map { slot ->
                 mapOf(
                     "slotId" to slot.id,
                     "orderIndex" to slot.orderIndex,
@@ -88,6 +96,37 @@ class ScheduleResponseMapper(
                     "score" to score.score,
                 )
             },
+        )
+    }
+
+    fun formatPublicShareSchedule(schedule: Schedule): Map<String, Any?> {
+        val publicKeys = setOf(
+            "id",
+            "roomId",
+            "destination",
+            "tripDate",
+            "version",
+            "optionType",
+            "isConfirmed",
+            "groupSatisfaction",
+            "summary",
+            "personaValidation",
+            "slots",
+            "satisfactionByUser",
+        )
+        return formatStoredSchedule(schedule).filterKeys { it in publicKeys }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun formatLlmMetadata(schedule: Schedule): Map<String, Any?> {
+        val metadata = schedule.generationInput["llm"] as? Map<String, Any?> ?: emptyMap()
+        val provider = schedule.llmProvider ?: metadata["provider"]
+        return mapOf(
+            "provider" to provider,
+            "attemptedProvider" to (metadata["attemptedProvider"] ?: provider),
+            "latencyMs" to metadata["latencyMs"],
+            "fallbackUsed" to (metadata["fallbackUsed"] ?: (provider == "deterministic-consensus")),
+            "fallbackReason" to metadata["fallbackReason"],
         )
     }
 
