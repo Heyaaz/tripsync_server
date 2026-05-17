@@ -186,6 +186,7 @@ class AuthContractTests(
                 jsonPath("$.data.rooms[0].roomId") { value(secondRoomId.toInt()) }
                 jsonPath("$.data.rooms[1].roomId") { value(firstRoomId.toInt()) }
                 jsonPath("$.data.rooms[0].destination") { value("충청남도") }
+                jsonPath("$.data.rooms[0].roomName") { value("충남 봄 여행") }
                 jsonPath("$.data.rooms[0].memberCount") { value(1) }
             }
     }
@@ -229,10 +230,11 @@ class AuthContractTests(
         val response = mockMvc.post("/rooms") {
             cookie(session)
             contentType = MediaType.APPLICATION_JSON
-            content = """{"destination":"충청남도","tripDate":"${LocalDate.now().plusDays(7)}"}"""
+            content = """{"destination":"충청남도","tripDate":"${LocalDate.now().plusDays(7)}","roomName":"충남 봄 여행"}"""
         }.andExpect {
             status { isCreated() }
             jsonPath("$.data.roomId") { value(notNullValue()) }
+            jsonPath("$.data.roomName") { value("충남 봄 여행") }
         }.andReturn().response.contentAsString
 
         return Regex("""\"roomId\":(\d+)""").find(response)!!.groupValues[1].toLong()

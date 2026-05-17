@@ -28,7 +28,7 @@ class RoomService(
 ) {
 
     @Transactional
-    fun createRoom(host: User, destination: String, tripDate: LocalDate): ApiResponse<Map<String, Any?>> {
+    fun createRoom(host: User, destination: String, tripDate: LocalDate, roomName: String? = null): ApiResponse<Map<String, Any?>> {
         if (host.isGuest) {
             throw DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "방장 권한이 필요합니다.")
         }
@@ -36,11 +36,13 @@ class RoomService(
             throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_REQUEST", "tripDate는 오늘 이후여야 합니다.")
         }
 
+        val normalizedRoomName = normalizeRoomName(roomName, destination)
         val room = tripRoomRepository.save(
             TripRoom(
                 hostUser = host,
                 shareCode = generateShareCode(),
                 destination = destination,
+                roomName = normalizedRoomName,
                 tripDate = tripDate,
                 status = TripRoomStatus.WAITING,
             )
@@ -60,6 +62,7 @@ class RoomService(
         return ApiResponse.ok(
             mapOf(
                 "roomId" to room.id,
+                "roomName" to room.roomName,
                 "shareCode" to room.shareCode,
                 "status" to room.status.name.lowercase(),
             )
@@ -230,6 +233,7 @@ class RoomService(
         val latestVersion = schedules.maxOfOrNull { it.version }
         val base = mapOf(
             "roomId" to room.id,
+            "roomName" to room.roomName,
             "destination" to room.destination,
             "tripDate" to room.tripDate.toString(),
             "tripStartDate" to room.tripDate.toString(),
@@ -267,6 +271,14 @@ class RoomService(
         }
 
         return base + mapOf("scheduleState" to scheduleState)
+    }
+
+    private fun normalizeRoomName(roomName: String?, destination: String): String {
+        val normalized = roomName?.trim()?.takeIf { it.isNotBlank() } ?: "${destination.trim()} 여행 계획"
+        if (normalized.length > 100) {
+            throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_REQUEST", "방 이름은 100자 이하여야 합니다.")
+        }
+        return normalized
     }
 
     private fun generateShareCode(): String {

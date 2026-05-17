@@ -78,6 +78,7 @@ data class CreateRoomDto(
     val tripDate: String,
     val tripStartDate: String? = null,
     val tripEndDate: String? = null,
+    val roomName: String? = null,
 )
 
 data class JoinRoomDto(
