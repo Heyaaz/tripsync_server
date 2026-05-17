@@ -191,6 +191,62 @@ class AuthContractTests(
             }
     }
 
+    @Test
+    fun `my rooms includes rooms joined as member`() {
+        val hostSession = registerSession("host-member-list@example.com", "방장목록")
+        val shareCode = createRoomShareCode(hostSession)
+        val memberSession = registerSession("member-list@example.com", "동행목록")
+
+        mockMvc.post("/rooms/$shareCode/join") {
+            cookie(memberSession)
+            contentType = MediaType.APPLICATION_JSON
+            content = "{}"
+        }.andExpect {
+            status { isCreated() }
+            jsonPath("$.data.status") { value("joined") }
+        }
+
+        mockMvc.get("/rooms/my") { cookie(memberSession) }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.data.rooms[0].shareCode") { value(shareCode) }
+                jsonPath("$.data.rooms[0].memberCount") { value(2) }
+            }
+    }
+
+    @Test
+    fun `joined member can see room from membership-based home entry list`() {
+        val hostSession = registerSession("host-member-room@example.com", "방장-member")
+        val memberSession = registerSession("member-rooms@example.com", "참여자")
+        val createResponse = mockMvc.post("/rooms") {
+            cookie(hostSession)
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"destination":"충청남도","tripDate":"${LocalDate.now().plusDays(7)}","roomName":"충남 봄 여행"}"""
+        }.andExpect {
+            status { isCreated() }
+            jsonPath("$.data.roomId") { value(notNullValue()) }
+            jsonPath("$.data.shareCode") { value(notNullValue()) }
+        }.andReturn().response.contentAsString
+        val roomId = Regex("""\"roomId\":(\d+)""").find(createResponse)!!.groupValues[1].toLong()
+        val shareCode = Regex("""\"shareCode\":\"([^\"]+)\"""").find(createResponse)!!.groupValues[1]
+
+        mockMvc.post("/rooms/$shareCode/join") {
+            cookie(memberSession)
+            contentType = MediaType.APPLICATION_JSON
+            content = "{}"
+        }.andExpect {
+            status { isCreated() }
+        }
+
+        mockMvc.get("/rooms/my") { cookie(memberSession) }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.data.rooms[0].roomId") { value(roomId.toInt()) }
+                jsonPath("$.data.rooms[0].hostUserId") { value(notNullValue()) }
+                jsonPath("$.data.rooms[0].memberCount") { value(2) }
+            }
+    }
+
 
     @Test
     fun `room name fallback preserves suffix within database limit`() {
@@ -226,8 +282,75 @@ class AuthContractTests(
 
     @Test
     fun `oauth start sets state cookie and local callback creates session`() {
+        assertOAuthRedirectPath("/rooms/new", "http://localhost:3001/rooms/new?login=success&provider=google")
+    }
+
+    @Test
+    fun `oauth callback preserves join redirect path`() {
+        assertOAuthRedirectPath("/join/ABC123", "http://localhost:3001/join/ABC123?login=success&provider=google")
+    }
+
+    @Test
+    fun `guest join is forbidden for share code join endpoint`() {
+        val hostSession = registerSession("host-join-guest-block@example.com", "호스트-금지")
+        val room = mockMvc.post("/rooms") {
+            cookie(hostSession)
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"destination":"충청남도","tripDate":"${LocalDate.now().plusDays(7)}","roomName":"동행자금지"}"""
+        }.andExpect {
+            status { isCreated() }
+            jsonPath("$.data.roomId") { value(notNullValue()) }
+            jsonPath("$.data.shareCode") { value(notNullValue()) }
+        }.andReturn().response.contentAsString
+        val shareCode = Regex("""\"shareCode\":\"([^\"]+)\"""").find(room)!!.groupValues[1]
+
+        val guestSession = mockMvc.post("/auth/guest") {
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"nickname":"게스트금지"}"""
+        }.andReturn().response.getCookie("ts_access_token")!!
+
+        mockMvc.post("/rooms/$shareCode/join") {
+            cookie(guestSession)
+            contentType = MediaType.APPLICATION_JSON
+            content = "{}"
+        }.andExpect {
+            status { isForbidden() }
+            jsonPath("$.success") { value(false) }
+            jsonPath("$.error.code") { value("FORBIDDEN") }
+            jsonPath("$.error.message") { value("로그인한 계정으로만 방에 참여할 수 있습니다.") }
+        }
+
+        mockMvc.post("/rooms/join/$shareCode") {
+            cookie(guestSession)
+            contentType = MediaType.APPLICATION_JSON
+            content = "{}"
+        }.andExpect {
+            status { isForbidden() }
+            jsonPath("$.success") { value(false) }
+            jsonPath("$.error.code") { value("FORBIDDEN") }
+            jsonPath("$.error.message") { value("로그인한 계정으로만 방에 참여할 수 있습니다.") }
+        }
+    }
+
+    @Test
+    fun `guest cannot access my rooms list`() {
+        val guestSession = mockMvc.post("/auth/guest") {
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"nickname":"게스트홈목록"}"""
+        }.andReturn().response.getCookie("ts_access_token")!!
+
+        mockMvc.get("/rooms/my") { cookie(guestSession) }
+            .andExpect {
+                status { isForbidden() }
+                jsonPath("$.success") { value(false) }
+                jsonPath("$.error.code") { value("FORBIDDEN") }
+                jsonPath("$.error.message") { value("로그인한 계정으로만 내 여행 계획을 확인할 수 있습니다.") }
+            }
+    }
+
+    private fun assertOAuthRedirectPath(redirectPath: String, expectedLocation: String) {
         val start = mockMvc.get("/auth/google") {
-            param("redirectPath", "/rooms/new")
+            param("redirectPath", redirectPath)
         }.andExpect {
             status { is3xxRedirection() }
             cookie { exists("ts_oauth_state") }
@@ -243,23 +366,32 @@ class AuthContractTests(
             cookie(stateCookie)
             param("code", "local-google-code")
             param("state", state)
-            param("redirectPath", "/rooms/new")
+            param("redirectPath", redirectPath)
         }.andExpect {
             status { is3xxRedirection() }
             cookie { exists("ts_access_token") }
-            header { string("Location", "http://localhost:3001/rooms/new?login=success&provider=google") }
+            header { string("Location", expectedLocation) }
         }
     }
 
-    private fun registerSession(email: String, nickname: String) = mockMvc.post("/auth/register") {
-        contentType = MediaType.APPLICATION_JSON
-        content = """{"email":"$email","password":"password123","nickname":"$nickname"}"""
-    }.andExpect {
-        status { isCreated() }
-        cookie { exists("ts_access_token") }
-    }.andReturn().response.getCookie("ts_access_token")!!
+    private fun registerSession(email: String, nickname: String): jakarta.servlet.http.Cookie {
+        val uniqueEmail = email.replace("@", "+${System.nanoTime()}@")
+        return mockMvc.post("/auth/register") {
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"email":"$uniqueEmail","password":"password123","nickname":"$nickname"}"""
+        }.andExpect {
+            status { isCreated() }
+            cookie { exists("ts_access_token") }
+        }.andReturn().response.getCookie("ts_access_token")!!
+    }
 
-    private fun createRoom(session: jakarta.servlet.http.Cookie): Long {
+    private fun createRoom(session: jakarta.servlet.http.Cookie): Long = createRoomPayload(session).roomId
+
+    private fun createRoomShareCode(session: jakarta.servlet.http.Cookie): String = createRoomPayload(session).shareCode
+
+    private data class CreatedRoomPayload(val roomId: Long, val shareCode: String)
+
+    private fun createRoomPayload(session: jakarta.servlet.http.Cookie): CreatedRoomPayload {
         val response = mockMvc.post("/rooms") {
             cookie(session)
             contentType = MediaType.APPLICATION_JSON
@@ -268,8 +400,11 @@ class AuthContractTests(
             status { isCreated() }
             jsonPath("$.data.roomId") { value(notNullValue()) }
             jsonPath("$.data.roomName") { value("충남 봄 여행") }
+            jsonPath("$.data.shareCode") { value(notNullValue()) }
         }.andReturn().response.contentAsString
 
-        return Regex("""\"roomId\":(\d+)""").find(response)!!.groupValues[1].toLong()
+        val roomId = Regex("""\"roomId\":(\d+)""").find(response)!!.groupValues[1].toLong()
+        val shareCode = Regex("""\"shareCode\":\"([^\"]+)\"""").find(response)!!.groupValues[1]
+        return CreatedRoomPayload(roomId, shareCode)
     }
 }
