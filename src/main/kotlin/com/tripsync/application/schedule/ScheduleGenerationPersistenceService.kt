@@ -12,6 +12,7 @@ import com.tripsync.domain.entity.ScheduleSlot
 import com.tripsync.domain.enums.ScheduleOptionType
 import com.tripsync.domain.enums.TripRoomStatus
 import com.tripsync.domain.enums.YnFlag
+import com.tripsync.domain.repository.PlaceQueryRepository
 import com.tripsync.domain.repository.PlaceRepository
 import com.tripsync.domain.repository.RoomMemberProfileRepository
 import com.tripsync.domain.repository.SatisfactionScoreRepository
@@ -30,11 +31,12 @@ class ScheduleGenerationPersistenceService(
     private val satisfactionScoreRepository: SatisfactionScoreRepository,
     private val roomMemberProfileRepository: RoomMemberProfileRepository,
     private val placeRepository: PlaceRepository,
+    private val placeQueryRepository: PlaceQueryRepository,
     private val userRepository: UserRepository,
     private val accessPolicy: ScheduleAccessPolicy,
 ) {
     @Transactional(readOnly = true)
-    fun loadGenerationContext(roomId: Long, hostId: Long): ScheduleGenerationContext {
+    fun loadGenerationContext(roomId: Long, hostId: Long, destination: String): ScheduleGenerationContext {
         accessPolicy.validateHost(roomId, hostId)
         accessPolicy.getActiveRoom(roomId)
         val profiles = roomMemberProfileRepository.findAllByRoomIdAndDelYn(roomId, YnFlag.N)
@@ -57,7 +59,7 @@ class ScheduleGenerationPersistenceService(
             )
         }
 
-        val places = placeRepository.findByDelYn(YnFlag.N)
+        val places = placeQueryRepository.findScheduleCandidates(destination)
         val placeCandidates = places.map {
             PlaceCandidate(
                 id = it.id,
