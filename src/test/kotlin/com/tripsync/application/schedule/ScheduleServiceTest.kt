@@ -140,6 +140,7 @@ class ScheduleServiceTest(
                 hostUser = host,
                 shareCode = "S${suffix.toString().takeLast(10)}",
                 destination = "충남",
+                roomName = "충남 여행 계획",
                 tripDate = LocalDate.now().plusDays(7),
                 status = TripRoomStatus.COMPLETED,
             )

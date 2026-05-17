@@ -21,6 +21,9 @@ class TripRoom(
     @Column(nullable = false, length = 100)
     var destination: String,
 
+    @Column(name = "room_name", nullable = false, length = 100)
+    var roomName: String,
+
     @Column(name = "trip_date", nullable = false)
     var tripDate: LocalDate,
 
