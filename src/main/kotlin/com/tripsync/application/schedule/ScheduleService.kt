@@ -191,6 +191,7 @@ class ScheduleService(
 
         scheduleRepository.findByRoomIdAndDelYn(roomId, YnFlag.N).forEach { it.isConfirmed = false }
         target.isConfirmed = true
+        target.room.status = com.tripsync.domain.enums.TripRoomStatus.COMPLETED
 
         return ApiResponse.ok(
             mapOf(

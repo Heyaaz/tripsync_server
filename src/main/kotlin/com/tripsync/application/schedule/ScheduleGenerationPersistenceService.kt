@@ -165,7 +165,6 @@ class ScheduleGenerationPersistenceService(
                 personaValidation = personaValidation,
             )
         }
-        room.status = TripRoomStatus.COMPLETED
         return SavedScheduleGeneration(version = version, options = saved)
     }
 

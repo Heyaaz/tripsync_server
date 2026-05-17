@@ -19,17 +19,17 @@ class RoomController(
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    fun createRoom(@Valid @RequestBody dto: CreateRoomDto, @CurrentUser user: User): ApiResponse<Map<String, Any>> {
+    fun createRoom(@Valid @RequestBody dto: CreateRoomDto, @CurrentUser user: User): ApiResponse<Map<String, Any?>> {
         return roomService.createRoom(user, dto.destination, LocalDate.parse(dto.tripDate))
     }
 
     @GetMapping("/my")
-    fun getMyRooms(@CurrentUser user: User): ApiResponse<Map<String, Any>> {
+    fun getMyRooms(@CurrentUser user: User): ApiResponse<Map<String, Any?>> {
         return roomService.getMyRooms(user)
     }
 
     @GetMapping("/share/{shareCode}")
-    fun getShareRoom(@PathVariable shareCode: String): ApiResponse<Map<String, Any>> {
+    fun getShareRoom(@PathVariable shareCode: String): ApiResponse<Map<String, Any?>> {
         return roomService.getShareRoom(shareCode)
     }
 
@@ -39,7 +39,7 @@ class RoomController(
         @PathVariable shareCode: String,
         @RequestBody(required = false) dto: JoinRoomDto?,
         @CurrentUser user: User,
-    ): ApiResponse<Map<String, Any>> {
+    ): ApiResponse<Map<String, Any?>> {
         return roomService.joinRoom(shareCode, dto?.tptiResultId, user)
     }
 
@@ -49,17 +49,17 @@ class RoomController(
         @PathVariable shareCode: String,
         @RequestBody(required = false) dto: JoinRoomDto?,
         @CurrentUser user: User,
-    ): ApiResponse<Map<String, Any>> {
+    ): ApiResponse<Map<String, Any?>> {
         return joinRoom(shareCode, dto, user)
     }
 
     @GetMapping("/{roomId}/members")
-    fun getMembers(@PathVariable roomId: Long, @CurrentUser user: User): ApiResponse<Map<String, Any>> {
+    fun getMembers(@PathVariable roomId: Long, @CurrentUser user: User): ApiResponse<Map<String, Any?>> {
         return roomService.getMembers(roomId, user)
     }
 
     @GetMapping("/{roomId}")
-    fun getRoom(@PathVariable roomId: Long, @CurrentUser user: User): ApiResponse<Map<String, Any>> {
+    fun getRoom(@PathVariable roomId: Long, @CurrentUser user: User): ApiResponse<Map<String, Any?>> {
         return roomService.getRoom(roomId, user)
     }
 }
