@@ -11,6 +11,7 @@ import com.tripsync.domain.enums.RoomMemberRole
 import com.tripsync.domain.enums.YnFlag
 import com.tripsync.domain.repository.RoomMemberRepository
 import com.tripsync.domain.repository.ScheduleSlotRepository
+import com.tripsync.domain.repository.TripPhotoAlbumRow
 import com.tripsync.domain.repository.TripPhotoRepository
 import com.tripsync.domain.repository.UserRepository
 import com.tripsync.application.schedule.ScheduleAccessPolicy
@@ -34,12 +35,12 @@ class PhotoService(
         val slots = scheduleSlotRepository.findAllByScheduleIdAndDelYn(schedule.id, YnFlag.N)
             .sortedBy { it.orderIndex }
         val photosBySlotId = tripPhotoRepository
-            .findAllByScheduleIdAndDelYnAndStatusOrderByScheduleSlotOrderIndexAscCreatedAtAsc(
+            .findAlbumRowsByScheduleIdAndDelYnAndStatus(
                 schedule.id,
                 YnFlag.N,
                 PhotoStatus.ACTIVE,
             )
-            .groupBy { it.scheduleSlot.id }
+            .groupBy { it.scheduleSlotId }
 
         return ApiResponse.ok(
             mapOf(
@@ -65,6 +66,7 @@ class PhotoService(
         val schedule = requireConfirmedMemberSchedule(scheduleId, userId)
         val slot = requireActiveSlot(schedule.id, slotId)
         val uploader = requireActiveUser(userId)
+        validateAlbumQuota(schedule.id, slot.id, uploader.id)
         val content = validateAndRead(file)
         val normalizedCaption = normalizeCaption(caption)
         val originalFilename = normalizeFilename(file.originalFilename)
@@ -195,6 +197,18 @@ class PhotoService(
         }
     }
 
+    private fun validateAlbumQuota(scheduleId: Long, slotId: Long, uploaderId: Long) {
+        if (tripPhotoRepository.countByScheduleIdAndDelYnAndStatus(scheduleId, YnFlag.N, PhotoStatus.ACTIVE) >= MAX_PHOTOS_PER_SCHEDULE) {
+            throw DomainException(HttpStatus.BAD_REQUEST, "PHOTO_ALBUM_LIMIT_EXCEEDED", "일정 사진첩에는 최대 ${MAX_PHOTOS_PER_SCHEDULE}장까지 업로드할 수 있습니다.")
+        }
+        if (tripPhotoRepository.countByScheduleSlotIdAndDelYnAndStatus(slotId, YnFlag.N, PhotoStatus.ACTIVE) >= MAX_PHOTOS_PER_SLOT) {
+            throw DomainException(HttpStatus.BAD_REQUEST, "PHOTO_SLOT_LIMIT_EXCEEDED", "장소별 사진은 최대 ${MAX_PHOTOS_PER_SLOT}장까지 업로드할 수 있습니다.")
+        }
+        if (tripPhotoRepository.countByScheduleIdAndUploaderIdAndDelYnAndStatus(scheduleId, uploaderId, YnFlag.N, PhotoStatus.ACTIVE) >= MAX_PHOTOS_PER_USER_PER_SCHEDULE) {
+            throw DomainException(HttpStatus.BAD_REQUEST, "PHOTO_USER_LIMIT_EXCEEDED", "한 사용자는 일정당 최대 ${MAX_PHOTOS_PER_USER_PER_SCHEDULE}장까지 업로드할 수 있습니다.")
+        }
+    }
+
     private fun validateAndRead(file: MultipartFile): ByteArray {
         if (file.isEmpty) {
             throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_PHOTO", "사진 파일을 첨부해야 합니다.")
@@ -202,8 +216,12 @@ class PhotoService(
         if (file.size > MAX_FILE_SIZE_BYTES) {
             throw DomainException(HttpStatus.BAD_REQUEST, "PHOTO_TOO_LARGE", "사진은 최대 10MB까지 업로드할 수 있습니다.")
         }
-        normalizeContentType(file.contentType)
-        return file.bytes
+        val contentType = normalizeContentType(file.contentType)
+        val content = file.bytes
+        if (!matchesContentTypeSignature(content, contentType)) {
+            throw DomainException(HttpStatus.BAD_REQUEST, "UNSUPPORTED_PHOTO_TYPE", "파일 내용과 사진 형식이 일치하지 않습니다.")
+        }
+        return content
     }
 
     private fun normalizeContentType(contentType: String?): String {
@@ -212,6 +230,32 @@ class PhotoService(
             throw DomainException(HttpStatus.BAD_REQUEST, "UNSUPPORTED_PHOTO_TYPE", "jpeg, png, webp 형식만 업로드할 수 있습니다.")
         }
         return normalized
+    }
+
+    private fun matchesContentTypeSignature(content: ByteArray, contentType: String): Boolean = when (contentType) {
+        "image/jpeg" -> content.size >= 3 &&
+            content[0] == 0xFF.toByte() &&
+            content[1] == 0xD8.toByte() &&
+            content[2] == 0xFF.toByte()
+        "image/png" -> content.size >= 8 &&
+            content[0] == 0x89.toByte() &&
+            content[1] == 0x50.toByte() &&
+            content[2] == 0x4E.toByte() &&
+            content[3] == 0x47.toByte() &&
+            content[4] == 0x0D.toByte() &&
+            content[5] == 0x0A.toByte() &&
+            content[6] == 0x1A.toByte() &&
+            content[7] == 0x0A.toByte()
+        "image/webp" -> content.size >= 12 &&
+            content[0] == 'R'.code.toByte() &&
+            content[1] == 'I'.code.toByte() &&
+            content[2] == 'F'.code.toByte() &&
+            content[3] == 'F'.code.toByte() &&
+            content[8] == 'W'.code.toByte() &&
+            content[9] == 'E'.code.toByte() &&
+            content[10] == 'B'.code.toByte() &&
+            content[11] == 'P'.code.toByte()
+        else -> false
     }
 
     private fun normalizeFilename(filename: String?): String {
@@ -231,7 +275,7 @@ class PhotoService(
         return normalized
     }
 
-    private fun formatSlot(slot: ScheduleSlot, photos: List<TripPhoto>): Map<String, Any?> = mapOf(
+    private fun formatSlot(slot: ScheduleSlot, photos: List<TripPhotoAlbumRow>): Map<String, Any?> = mapOf(
         "slotId" to slot.id,
         "scheduleSlotId" to slot.id,
         "orderIndex" to slot.orderIndex,
@@ -242,6 +286,10 @@ class PhotoService(
             "name" to slot.place.name,
             "address" to slot.place.address,
             "imageUrl" to slot.place.imageUrl,
+            "category" to slot.place.category,
+            "latitude" to slot.place.latitude.toDouble(),
+            "longitude" to slot.place.longitude.toDouble(),
+            "isDepopulationArea" to isDepopulationArea(slot.place.metadataTags),
         ),
         "photos" to photos.map { formatPhoto(it) },
     )
@@ -270,8 +318,40 @@ class PhotoService(
         "updatedAt" to photo.updatedAt.toString(),
     )
 
+    private fun formatPhoto(photo: TripPhotoAlbumRow): Map<String, Any?> = mapOf(
+        "id" to photo.id,
+        "photoId" to photo.id,
+        "scheduleId" to photo.scheduleId,
+        "slotId" to photo.scheduleSlotId,
+        "scheduleSlotId" to photo.scheduleSlotId,
+        "placeId" to photo.placeId,
+        "uploader" to mapOf(
+            "id" to photo.uploaderUserId,
+            "nickname" to photo.uploaderNickname,
+        ),
+        "uploaderUserId" to photo.uploaderUserId,
+        "uploaderNickname" to photo.uploaderNickname,
+        "originalFilename" to photo.originalFilename,
+        "contentType" to photo.contentType,
+        "fileSize" to photo.fileSize,
+        "sizeBytes" to photo.fileSize,
+        "caption" to photo.caption,
+        "status" to photo.status.name.lowercase(),
+        "contentUrl" to "/api/schedules/${photo.scheduleId}/album/photos/${photo.id}/content",
+        "createdAt" to photo.createdAt.toString(),
+        "updatedAt" to photo.updatedAt.toString(),
+    )
+
+    private fun isDepopulationArea(metadataTags: Map<String, Any>?): Boolean {
+        return metadataTags?.get("populationDeclineArea") == true || metadataTags?.get("regionType") == "population_decline"
+    }
+
+
     companion object {
         const val MAX_FILE_SIZE_BYTES = 10L * 1024L * 1024L
+        private const val MAX_PHOTOS_PER_SCHEDULE = 200L
+        private const val MAX_PHOTOS_PER_SLOT = 50L
+        private const val MAX_PHOTOS_PER_USER_PER_SCHEDULE = 100L
         private const val MAX_FILENAME_LENGTH = 255
         private const val MAX_CAPTION_LENGTH = 500
         private val ALLOWED_CONTENT_TYPES = setOf("image/jpeg", "image/png", "image/webp")

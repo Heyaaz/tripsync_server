@@ -17,9 +17,15 @@ CREATE TABLE trip_photos (
     deleted_at TIMESTAMPTZ,
     del_yn VARCHAR(1) NOT NULL DEFAULT 'N',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_trip_photos_status CHECK (status IN ('ACTIVE', 'HIDDEN', 'DELETED')),
+    CONSTRAINT chk_trip_photos_del_yn CHECK (del_yn IN ('Y', 'N')),
+    CONSTRAINT chk_trip_photos_file_size CHECK (file_size > 0 AND file_size <= 10485760)
 );
 
 CREATE INDEX idx_trip_photos_schedule_slot ON trip_photos(schedule_id, schedule_slot_id);
 CREATE INDEX idx_trip_photos_room ON trip_photos(room_id);
 CREATE INDEX idx_trip_photos_uploader ON trip_photos(uploader_user_id);
+CREATE INDEX idx_trip_photos_album_active ON trip_photos(schedule_id, del_yn, status, schedule_slot_id, created_at);
+CREATE INDEX idx_trip_photos_slot_active ON trip_photos(schedule_slot_id, del_yn, status);
+CREATE INDEX idx_trip_photos_schedule_uploader_active ON trip_photos(schedule_id, uploader_user_id, del_yn, status);

@@ -61,6 +61,7 @@ class PhotoController(
             .contentType(MediaType.parseMediaType(content.contentType))
             .contentLength(content.size)
             .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
+            .header("X-Content-Type-Options", "nosniff")
             .body(content.content)
     }
 
@@ -72,7 +73,7 @@ class PhotoController(
         @CurrentUser user: User,
     ): ApiResponse<Map<String, Any?>> = photoService.updateCaption(scheduleId, photoId, user.id, dto.caption)
 
-    @PatchMapping("/schedules/{scheduleId}/photos/{photoId}/hide")
+    @PatchMapping("/schedules/{scheduleId}/photos/{photoId}/hide", "/schedules/{scheduleId}/album/photos/{photoId}/hide")
     fun hidePhoto(
         @PathVariable scheduleId: Long,
         @PathVariable photoId: Long,

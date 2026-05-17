@@ -93,6 +93,45 @@ class TripPhotoRepositoryTest(
         assertArrayEquals(content, reloaded.content)
     }
 
+
+    @Test
+    fun `album row query returns metadata without requiring photo content in response shape`() {
+        val fixture = createFixture()
+        val content = byteArrayOf(0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50)
+        val saved = tripPhotoRepository.saveAndFlush(
+            photo(fixture, fixture.firstSlot, "album.webp", "image/webp", content)
+        )
+        entityManager.clear()
+
+        val rows = tripPhotoRepository.findAlbumRowsByScheduleIdAndDelYnAndStatus(
+            fixture.schedule.id,
+            YnFlag.N,
+            PhotoStatus.ACTIVE,
+        )
+
+        assertEquals(1, rows.size)
+        assertEquals(saved.id, rows.single().id)
+        assertEquals(fixture.firstSlot.id, rows.single().scheduleSlotId)
+        assertEquals(fixture.host.id, rows.single().uploaderUserId)
+        assertEquals("photo-host-", rows.single().uploaderNickname.take("photo-host-".length))
+        assertEquals("album.webp", rows.single().originalFilename)
+        assertEquals(content.size.toLong(), rows.single().fileSize)
+    }
+
+    @Test
+    fun `active quota counters ignore hidden and soft deleted photos`() {
+        val fixture = createFixture()
+        tripPhotoRepository.save(photo(fixture, fixture.firstSlot, "active.jpg", "image/jpeg", byteArrayOf(1), status = PhotoStatus.ACTIVE))
+        tripPhotoRepository.save(photo(fixture, fixture.firstSlot, "hidden.jpg", "image/jpeg", byteArrayOf(2), status = PhotoStatus.HIDDEN))
+        val deleted = tripPhotoRepository.save(photo(fixture, fixture.firstSlot, "deleted.jpg", "image/jpeg", byteArrayOf(3), status = PhotoStatus.ACTIVE))
+        deleted.delYn = YnFlag.Y
+        tripPhotoRepository.saveAndFlush(deleted)
+
+        assertEquals(1, tripPhotoRepository.countByScheduleIdAndDelYnAndStatus(fixture.schedule.id, YnFlag.N, PhotoStatus.ACTIVE))
+        assertEquals(1, tripPhotoRepository.countByScheduleSlotIdAndDelYnAndStatus(fixture.firstSlot.id, YnFlag.N, PhotoStatus.ACTIVE))
+        assertEquals(1, tripPhotoRepository.countByScheduleIdAndUploaderIdAndDelYnAndStatus(fixture.schedule.id, fixture.host.id, YnFlag.N, PhotoStatus.ACTIVE))
+    }
+
     @Test
     fun `deleted photos are not returned by active id lookup`() {
         val fixture = createFixture()
