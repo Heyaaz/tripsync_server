@@ -23,6 +23,7 @@ import java.time.ZoneId
 class ScheduleService(
     private val scheduleRepository: ScheduleRepository,
     private val scheduleSlotRepository: ScheduleSlotRepository,
+    private val placeQueryRepository: PlaceQueryRepository,
     private val placeRepository: PlaceRepository,
     private val consensusService: ConsensusService,
     private val generationPersistenceService: ScheduleGenerationPersistenceService,
@@ -33,7 +34,7 @@ class ScheduleService(
     private val logger = KotlinLogging.logger {}
 
     fun generateSchedule(roomId: Long, hostId: Long, dto: GenerateScheduleDto): ApiResponse<Map<String, Any?>> {
-        val generationContext = generationPersistenceService.loadGenerationContext(roomId, hostId)
+        val generationContext = generationPersistenceService.loadGenerationContext(roomId, hostId, dto.destination)
         val members = generationContext.members
         val placesById = generationContext.placesById
 
@@ -88,18 +89,9 @@ class ScheduleService(
         accessPolicy.validateHost(schedule.room.id, userId)
         accessPolicy.validateConfirmedSchedule(schedule)
 
-        val normalizedQuery = query.trim().lowercase()
-        val usedPlaceIds = scheduleSlotRepository.findAllByScheduleIdAndDelYn(schedule.id, YnFlag.N)
-            .map { it.place.id }
-            .toSet()
-        val places = placeRepository.findByDelYn(YnFlag.N)
+        val usedPlaceIds = scheduleSlotRepository.findActivePlaceIdsByScheduleId(schedule.id).toSet()
+        val places = placeQueryRepository.searchActivePlaces(query.trim())
             .asSequence()
-            .filter { place ->
-                normalizedQuery.isBlank() ||
-                    place.name.lowercase().contains(normalizedQuery) ||
-                    place.address.lowercase().contains(normalizedQuery) ||
-                    place.category.lowercase().contains(normalizedQuery)
-            }
             .sortedWith(
                 compareByDescending<Place> { responseMapper.isDepopulationArea(it.metadataTags) }
                     .thenBy { it.name }
