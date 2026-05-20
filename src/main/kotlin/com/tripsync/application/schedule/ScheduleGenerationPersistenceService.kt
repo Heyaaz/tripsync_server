@@ -19,6 +19,7 @@ import com.tripsync.domain.repository.RoomMemberProfileRepository
 import com.tripsync.domain.repository.SatisfactionScoreRepository
 import com.tripsync.domain.repository.ScheduleRepository
 import com.tripsync.domain.repository.ScheduleSlotRepository
+import com.tripsync.domain.repository.TripRoomRepository
 import com.tripsync.domain.repository.UserRepository
 import com.tripsync.web.dto.GenerateScheduleDto
 import org.springframework.http.HttpStatus
@@ -35,6 +36,7 @@ class ScheduleGenerationPersistenceService(
     private val placeQueryRepository: PlaceQueryRepository,
     private val externalPopularityMetricRepository: ExternalPopularityMetricRepository,
     private val userRepository: UserRepository,
+    private val tripRoomRepository: TripRoomRepository,
     private val accessPolicy: ScheduleAccessPolicy,
 ) {
     @Transactional(readOnly = true)
@@ -100,7 +102,8 @@ class ScheduleGenerationPersistenceService(
         options: List<ScheduleOptionDraft>,
         personaValidationByType: Map<ScheduleOptionType, Map<String, Any>>,
     ): SavedScheduleGeneration {
-        val room = accessPolicy.getActiveRoom(roomId)
+        val room = tripRoomRepository.findActiveByIdForUpdate(roomId, YnFlag.N)
+            ?: throw DomainException(HttpStatus.NOT_FOUND, "ROOM_NOT_FOUND", "존재하지 않는 방입니다.")
         val version = (scheduleRepository.findTopByRoomIdAndDelYnOrderByVersionDesc(room.id, YnFlag.N)?.version ?: 0) + 1
         val saved = options.map { option ->
             val personaValidation = personaValidationByType[option.optionType]
