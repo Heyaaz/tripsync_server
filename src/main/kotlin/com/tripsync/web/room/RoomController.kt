@@ -58,6 +58,11 @@ class RoomController(
         return roomService.getMembers(roomId, user)
     }
 
+    @DeleteMapping("/{roomId}")
+    fun deleteRoom(@PathVariable roomId: Long, @CurrentUser user: User): ApiResponse<Map<String, Any?>> {
+        return roomService.deleteRoom(roomId, user)
+    }
+
     @GetMapping("/{roomId}")
     fun getRoom(@PathVariable roomId: Long, @CurrentUser user: User): ApiResponse<Map<String, Any?>> {
         return roomService.getRoom(roomId, user)

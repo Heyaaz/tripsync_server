@@ -1,7 +1,26 @@
 package com.tripsync
 
+import com.tripsync.domain.entity.Place
+import com.tripsync.domain.entity.SatisfactionScore
+import com.tripsync.domain.entity.Schedule
+import com.tripsync.domain.entity.ScheduleSlot
+import com.tripsync.domain.entity.TripPhoto
+import com.tripsync.domain.enums.PhotoStatus
+import com.tripsync.domain.enums.ReasonAxis
+import com.tripsync.domain.enums.ScheduleOptionType
+import com.tripsync.domain.enums.SlotType
+import com.tripsync.domain.enums.TripRoomStatus
+import com.tripsync.domain.enums.YnFlag
+import com.tripsync.domain.repository.PlaceRepository
+import com.tripsync.domain.repository.SatisfactionScoreRepository
+import com.tripsync.domain.repository.ScheduleRepository
+import com.tripsync.domain.repository.ScheduleSlotRepository
+import com.tripsync.domain.repository.TripPhotoRepository
+import com.tripsync.domain.repository.TripRoomRepository
+import com.tripsync.domain.repository.UserRepository
 import org.hamcrest.Matchers.notNullValue
 import org.hamcrest.Matchers.startsWith
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
@@ -9,9 +28,12 @@ import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.http.MediaType
 import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.delete
 import org.springframework.test.web.servlet.get
 import org.springframework.test.web.servlet.post
+import java.math.BigDecimal
 import java.net.URLDecoder
+import java.time.Instant
 import java.time.LocalDate
 import java.nio.charset.StandardCharsets
 
@@ -20,6 +42,13 @@ import java.nio.charset.StandardCharsets
 @ActiveProfiles("test")
 class AuthContractTests(
     @Autowired private val mockMvc: MockMvc,
+    @Autowired private val userRepository: UserRepository,
+    @Autowired private val tripRoomRepository: TripRoomRepository,
+    @Autowired private val placeRepository: PlaceRepository,
+    @Autowired private val scheduleRepository: ScheduleRepository,
+    @Autowired private val scheduleSlotRepository: ScheduleSlotRepository,
+    @Autowired private val satisfactionScoreRepository: SatisfactionScoreRepository,
+    @Autowired private val tripPhotoRepository: TripPhotoRepository,
 ) {
     @Test
     fun `guest session returns Nest-compatible user payload and session cookie`() {
@@ -348,6 +377,91 @@ class AuthContractTests(
             }
     }
 
+    @Test
+    fun `host can delete own room and it disappears from room entry points`() {
+        val hostSession = registerSession("host-delete-room@example.com", "삭제방장")
+        val payload = createRoomPayload(hostSession)
+
+        mockMvc.delete("/rooms/${payload.roomId}") { cookie(hostSession) }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.success") { value(true) }
+                jsonPath("$.data.roomId") { value(payload.roomId.toInt()) }
+                jsonPath("$.data.deleted") { value(true) }
+            }
+
+        mockMvc.get("/rooms/my") { cookie(hostSession) }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.data.rooms.length()") { value(0) }
+            }
+
+        mockMvc.get("/rooms/${payload.roomId}") { cookie(hostSession) }
+            .andExpect {
+                status { isNotFound() }
+                jsonPath("$.error.code") { value("ROOM_NOT_FOUND") }
+            }
+
+        mockMvc.get("/rooms/share/${payload.shareCode}")
+            .andExpect {
+                status { isNotFound() }
+                jsonPath("$.error.code") { value("INVALID_SHARE_CODE") }
+            }
+    }
+
+    @Test
+    fun `joined member delete request leaves room without deleting host room`() {
+        val hostSession = registerSession("host-delete-forbidden@example.com", "삭제방장2")
+        val payload = createRoomPayload(hostSession)
+        val memberSession = registerSession("member-delete-forbidden@example.com", "삭제멤버")
+
+        mockMvc.post("/rooms/${payload.shareCode}/join") {
+            cookie(memberSession)
+            contentType = MediaType.APPLICATION_JSON
+            content = "{}"
+        }.andExpect {
+            status { isCreated() }
+        }
+        val memberUserId = currentUserId(memberSession)
+        val archiveFixture = createArchiveFixture(payload.roomId, memberUserId)
+
+        mockMvc.delete("/rooms/${payload.roomId}") { cookie(memberSession) }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.success") { value(true) }
+                jsonPath("$.data.roomId") { value(payload.roomId.toInt()) }
+                jsonPath("$.data.deleted") { value(false) }
+                jsonPath("$.data.left") { value(true) }
+            }
+
+        mockMvc.get("/rooms/my") { cookie(memberSession) }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.data.rooms.length()") { value(0) }
+            }
+
+        mockMvc.get("/rooms/${payload.roomId}") { cookie(memberSession) }
+            .andExpect {
+                status { isForbidden() }
+                jsonPath("$.error.code") { value("FORBIDDEN") }
+            }
+
+        mockMvc.get("/rooms/${payload.roomId}") { cookie(hostSession) }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.data.memberCount") { value(1) }
+            }
+
+        mockMvc.get("/rooms/share/${payload.shareCode}")
+            .andExpect { status { isOk() } }
+
+        val photo = tripPhotoRepository.findById(archiveFixture.photoId).orElseThrow()
+        assertEquals(YnFlag.N, photo.delYn)
+        assertEquals(PhotoStatus.ACTIVE, photo.status)
+        val score = satisfactionScoreRepository.findById(archiveFixture.satisfactionScoreId).orElseThrow()
+        assertEquals(YnFlag.Y, score.delYn)
+    }
+
     private fun assertOAuthRedirectPath(redirectPath: String, expectedLocation: String) {
         val start = mockMvc.get("/auth/google") {
             param("redirectPath", redirectPath)
@@ -373,6 +487,83 @@ class AuthContractTests(
             header { string("Location", expectedLocation) }
         }
     }
+
+    private fun currentUserId(session: jakarta.servlet.http.Cookie): Long {
+        val response = mockMvc.get("/auth/me") { cookie(session) }
+            .andExpect { status { isOk() } }
+            .andReturn().response.contentAsString
+        return Regex("\"id\":(\\d+)").find(response)!!.groupValues[1].toLong()
+    }
+
+    private fun createArchiveFixture(roomId: Long, uploaderUserId: Long): ArchiveFixture {
+        val room = tripRoomRepository.findById(roomId).orElseThrow()
+        room.status = TripRoomStatus.COMPLETED
+        val uploader = userRepository.findById(uploaderUserId).orElseThrow()
+        val place = placeRepository.save(
+            Place(
+                tourApiId = "leave-photo-${System.nanoTime()}",
+                name = "탈퇴 테스트 장소",
+                address = "충청남도 보령시",
+                latitude = BigDecimal("36.5000000"),
+                longitude = BigDecimal("126.5000000"),
+                category = "관광지",
+                mobilityScore = 50,
+                photoScore = 80,
+                budgetScore = 60,
+                themeScore = 40,
+                metadataTags = mapOf("populationDeclineArea" to true),
+            )
+        )
+        val schedule = scheduleRepository.save(
+            Schedule(
+                room = room,
+                version = 1,
+                optionType = ScheduleOptionType.BALANCED,
+                isConfirmed = true,
+                generationInput = mapOf("destination" to room.destination),
+                summary = "탈퇴 테스트 확정 일정",
+                groupSatisfaction = 90,
+            )
+        )
+        val slot = scheduleSlotRepository.save(
+            ScheduleSlot(
+                schedule = schedule,
+                startTime = Instant.parse("2026-06-01T00:00:00Z"),
+                endTime = Instant.parse("2026-06-01T01:00:00Z"),
+                place = place,
+                slotType = SlotType.COMMON,
+                reasonAxis = ReasonAxis.COMMON,
+                reasonText = "탈퇴 테스트 장소",
+                orderIndex = 1,
+            )
+        )
+        val photo = tripPhotoRepository.save(
+            TripPhoto(
+                room = room,
+                schedule = schedule,
+                scheduleSlot = slot,
+                place = place,
+                uploader = uploader,
+                originalFilename = "leave-photo.jpg",
+                contentType = "image/jpeg",
+                fileSize = 1,
+                content = byteArrayOf(1),
+                caption = "탈퇴 후 유지될 사진",
+                status = PhotoStatus.ACTIVE,
+            )
+        )
+        val score = satisfactionScoreRepository.save(
+            SatisfactionScore(
+                schedule = schedule,
+                user = uploader,
+                score = 88,
+                breakdown = mapOf("overall" to 88),
+            )
+        )
+        return ArchiveFixture(photo.id, score.id)
+    }
+
+    private data class ArchiveFixture(val photoId: Long, val satisfactionScoreId: Long)
 
     private fun registerSession(email: String, nickname: String): jakarta.servlet.http.Cookie {
         val uniqueEmail = email.replace("@", "+${System.nanoTime()}@")
