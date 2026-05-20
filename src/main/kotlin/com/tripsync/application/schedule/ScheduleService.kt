@@ -41,7 +41,8 @@ class ScheduleService(
         val context = OptionContext(
             roomId = roomId,
             destination = dto.destination,
-            tripDate = dto.tripDate,
+            tripDate = dto.tripStartDate ?: dto.tripDate,
+            tripEndDate = dto.tripEndDate ?: dto.tripStartDate ?: dto.tripDate,
             startTime = dto.startTime,
             endTime = dto.endTime,
             members = members,
@@ -105,16 +106,15 @@ class ScheduleService(
                     .thenBy { it.name }
             )
             .take(30)
-            .map { place ->
-                responseMapper.formatPlace(place, place.id, place.name, place.address) + mapOf(
-                    "alreadyAdded" to usedPlaceIds.contains(place.id),
-                )
-            }
             .toList()
+        val formattedPlaces = responseMapper.formatPlaces(places)
+            .map { place ->
+                place + mapOf("alreadyAdded" to usedPlaceIds.contains(place["id"]))
+            }
 
         return ApiResponse.ok(
             mapOf(
-                "places" to places,
+                "places" to formattedPlaces,
                 "query" to query.trim(),
             )
         )
@@ -335,7 +335,7 @@ class ScheduleService(
         val input = schedule.generationInput
         val startText = input["startTime"]?.toString()?.takeIf { it.isNotBlank() } ?: "09:00"
         val endText = input["endTime"]?.toString()?.takeIf { it.isNotBlank() } ?: "21:00"
-        val tripDate = LocalDate.parse(schedule.room.tripDate.toString())
+        val tripDate = LocalDate.parse(schedule.room.tripStartDate.toString())
         val zone = ZoneId.of("Asia/Seoul")
         val startParts = startText.split(":")
         val endParts = endText.split(":")

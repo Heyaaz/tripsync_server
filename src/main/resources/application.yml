@@ -86,6 +86,24 @@ tourapi:
     request-interval-millis: ${TOUR_API_SYNC_REQUEST_INTERVAL_MILLIS:0}
     enrich-limit: ${TOUR_API_ENRICH_LIMIT:50}
 
+external-popularity:
+  sync:
+    enabled: ${EXTERNAL_POPULARITY_SYNC_ENABLED:true}
+    cron: ${EXTERNAL_POPULARITY_SYNC_CRON:0 30 4 * * MON}
+    batch-limit: ${EXTERNAL_POPULARITY_BATCH_LIMIT:500}
+    request-interval-millis: ${EXTERNAL_POPULARITY_REQUEST_INTERVAL_MILLIS:0}
+    expires-after-days: ${EXTERNAL_POPULARITY_EXPIRES_AFTER_DAYS:14}
+  naver:
+    client-id: ${NAVER_DATALAB_CLIENT_ID:}
+    client-secret: ${NAVER_DATALAB_CLIENT_SECRET:}
+    search-url: ${NAVER_DATALAB_SEARCH_URL:https://openapi.naver.com/v1/datalab/search}
+    lookback-days: ${NAVER_DATALAB_LOOKBACK_DAYS:30}
+  google:
+    api-key: ${GOOGLE_PLACES_API_KEY:}
+    match-radius-meters: ${GOOGLE_PLACES_MATCH_RADIUS_METERS:500}
+    min-name-similarity: ${GOOGLE_PLACES_MIN_NAME_SIMILARITY:0.45}
+    photo-max-width: ${GOOGLE_PLACES_PHOTO_MAX_WIDTH:900}
+
 api:
   base-url: ${API_BASE_URL:http://localhost:8080/api}
 

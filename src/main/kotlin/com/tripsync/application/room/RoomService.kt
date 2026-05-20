@@ -33,12 +33,21 @@ class RoomService(
 ) {
 
     @Transactional
-    fun createRoom(host: User, destination: String, tripDate: LocalDate, roomName: String? = null): ApiResponse<Map<String, Any?>> {
+    fun createRoom(
+        host: User,
+        destination: String,
+        tripStartDate: LocalDate,
+        tripEndDate: LocalDate,
+        roomName: String? = null,
+    ): ApiResponse<Map<String, Any?>> {
         if (host.isGuest) {
             throw DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "방장 권한이 필요합니다.")
         }
-        if (!tripDate.isAfter(LocalDate.now())) {
-            throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_REQUEST", "tripDate는 오늘 이후여야 합니다.")
+        if (!tripStartDate.isAfter(LocalDate.now())) {
+            throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_REQUEST", "tripStartDate는 오늘 이후여야 합니다.")
+        }
+        if (tripEndDate.isBefore(tripStartDate)) {
+            throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_REQUEST", "tripEndDate는 tripStartDate보다 빠를 수 없습니다.")
         }
 
         val normalizedRoomName = normalizeRoomName(roomName, destination)
@@ -48,7 +57,9 @@ class RoomService(
                 shareCode = generateShareCode(),
                 destination = destination,
                 roomName = normalizedRoomName,
-                tripDate = tripDate,
+                tripDate = tripStartDate,
+                tripStartDate = tripStartDate,
+                tripEndDate = tripEndDate,
                 status = TripRoomStatus.WAITING,
             )
         )
@@ -69,6 +80,9 @@ class RoomService(
                 "roomId" to room.id,
                 "roomName" to room.roomName,
                 "shareCode" to room.shareCode,
+                "tripDate" to room.tripDate.toString(),
+                "tripStartDate" to room.tripStartDate.toString(),
+                "tripEndDate" to room.tripEndDate.toString(),
                 "status" to room.status.name.lowercase(),
             )
         )
@@ -294,9 +308,9 @@ class RoomService(
             "roomId" to room.id,
             "roomName" to room.roomName,
             "destination" to room.destination,
-            "tripDate" to room.tripDate.toString(),
-            "tripStartDate" to room.tripDate.toString(),
-            "tripEndDate" to room.tripDate.toString(),
+            "tripDate" to room.tripStartDate.toString(),
+            "tripStartDate" to room.tripStartDate.toString(),
+            "tripEndDate" to room.tripEndDate.toString(),
             "shareCode" to room.shareCode,
             "status" to room.status.name.lowercase(),
             "hostUserId" to room.hostUser.id,

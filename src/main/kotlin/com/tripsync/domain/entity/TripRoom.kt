@@ -27,6 +27,12 @@ class TripRoom(
     @Column(name = "trip_date", nullable = false)
     var tripDate: LocalDate,
 
+    @Column(name = "trip_start_date", nullable = false)
+    var tripStartDate: LocalDate = tripDate,
+
+    @Column(name = "trip_end_date", nullable = false)
+    var tripEndDate: LocalDate = tripDate,
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     var status: TripRoomStatus = TripRoomStatus.WAITING,
