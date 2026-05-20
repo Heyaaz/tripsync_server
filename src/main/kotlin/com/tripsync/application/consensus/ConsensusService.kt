@@ -38,6 +38,7 @@ class ConsensusService(
             6 to listOf(120, 120, 120, 120, 120, 120),
             7 to listOf(90, 120, 90, 120, 90, 120, 90),
         )
+        private const val NEARBY_LOCALITY_RADIUS_KM = 45.0
         private val SCORE_AXES = ScoreAxis.entries
     }
 
@@ -297,10 +298,11 @@ class ConsensusService(
         val sameIds = sameLocality.map { place -> place.id }.toSet()
         val nearby = places
             .filter { it.id !in sameLocality.map { place -> place.id }.toSet() }
-            .filter { distanceKm(anchor, it)?.let { distance -> distance <= 12.0 } == true }
+            .filter { distanceKm(anchor, it)?.let { distance -> distance <= NEARBY_LOCALITY_RADIUS_KM } == true }
             .sortedBy { distanceKm(anchor, it) ?: Double.MAX_VALUE }
 
-        return (sameLocality + nearby.filter { it.id !in sameIds }).distinctBy { it.id }
+        val scoped = (sameLocality + nearby.filter { it.id !in sameIds }).distinctBy { it.id }
+        return if (scoped.size >= targetSlotCount) scoped else places
     }
 
     private fun localityScore(group: List<PlaceCandidate>, optionType: ScheduleOptionType, targetSlotCount: Int): Double {
@@ -563,7 +565,7 @@ class ConsensusService(
                 usedPlaceKeys = currentOptionPlaceKeys,
                 avoidPlaceIds = avoidPlaceIdsByOrder[orderIndex].orEmpty(),
                 avoidPlaceKeys = avoidPlaceKeysByOrder[orderIndex].orEmpty(),
-                previousPlace = chosenPlaces.lastOrNull(),
+                previousPlace = previousPlaceInSameTripDay(targets, index, chosenPlaces),
                 preferHiddenGem = preferHiddenGem,
                 mustBeHiddenGem = index == forcedHiddenGemIndex,
                 tripDate = tripDate,
@@ -716,6 +718,19 @@ class ConsensusService(
     private fun pickForcedHiddenGemSlot(targets: List<TargetVector>): Int {
         val personalIndex = targets.indexOfFirst { it.slotType == SlotType.PERSONAL }
         return if (personalIndex >= 0) personalIndex else targets.size / 2
+    }
+
+    private fun previousPlaceInSameTripDay(
+        targets: List<TargetVector>,
+        currentIndex: Int,
+        chosenPlaces: List<PlaceCandidate>,
+    ): PlaceCandidate? {
+        if (currentIndex <= 0) return null
+        val previousTarget = targets.getOrNull(currentIndex - 1) ?: return null
+        val currentTarget = targets.getOrNull(currentIndex) ?: return null
+        val sameTripDay = previousTarget.startTime.atZone(ZoneId.of("Asia/Seoul")).toLocalDate() ==
+            currentTarget.startTime.atZone(ZoneId.of("Asia/Seoul")).toLocalDate()
+        return chosenPlaces.lastOrNull()?.takeIf { sameTripDay }
     }
 
     private fun rankPlaces(
