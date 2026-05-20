@@ -1,5 +1,8 @@
 package com.tripsync.application.schedule
 
+import com.tripsync.application.consensus.ScheduleOptionDraft
+import com.tripsync.application.consensus.ScheduleSlotDraft
+import com.tripsync.application.consensus.SatisfactionDraft
 import com.tripsync.common.exception.DomainException
 import com.tripsync.domain.entity.Place
 import com.tripsync.domain.entity.RoomMember
@@ -11,6 +14,7 @@ import com.tripsync.domain.enums.AuthProvider
 import com.tripsync.domain.enums.ReasonAxis
 import com.tripsync.domain.enums.RoomMemberRole
 import com.tripsync.domain.enums.ScheduleOptionType
+import com.tripsync.domain.enums.ScoreAxis
 import com.tripsync.domain.enums.SlotType
 import com.tripsync.domain.enums.TripRoomStatus
 import com.tripsync.domain.repository.PlaceRepository
@@ -19,6 +23,7 @@ import com.tripsync.domain.repository.ScheduleRepository
 import com.tripsync.domain.repository.ScheduleSlotRepository
 import com.tripsync.domain.repository.TripRoomRepository
 import com.tripsync.domain.repository.UserRepository
+import com.tripsync.web.dto.GenerateScheduleDto
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -31,11 +36,15 @@ import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 @SpringBootTest
 @ActiveProfiles("test")
 class ScheduleServiceTest(
     @Autowired private val scheduleService: ScheduleService,
+    @Autowired private val generationPersistenceService: ScheduleGenerationPersistenceService,
     @Autowired private val userRepository: UserRepository,
     @Autowired private val tripRoomRepository: TripRoomRepository,
     @Autowired private val roomMemberRepository: RoomMemberRepository,
@@ -125,6 +134,51 @@ class ScheduleServiceTest(
         assertEquals("INVALID_REQUEST", error.code)
     }
 
+    @Test
+    fun `concurrent generated schedule saves allocate different versions`() {
+        val fixture = createFixture(isConfirmed = false)
+        val workers = 4
+        val dto = GenerateScheduleDto(
+            destination = "충남",
+            tripDate = "2026-06-01",
+            startTime = "09:00",
+            endTime = "21:00",
+        )
+        val options = listOf(generatedOption(fixture.host.id, fixture.newPlace.id))
+        val ready = CountDownLatch(workers)
+        val start = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(workers)
+
+        try {
+            val futures = (1..workers).map {
+                pool.submit<SavedScheduleGeneration> {
+                    ready.countDown()
+                    start.await()
+                    generationPersistenceService.saveGeneratedOptions(
+                        roomId = fixture.schedule.room.id,
+                        dto = dto,
+                        options = options,
+                        personaValidationByType = emptyMap(),
+                    )
+                }
+            }
+
+            assertTrue(ready.await(5, TimeUnit.SECONDS))
+            start.countDown()
+
+            val savedVersions = futures.map { it.get(20, TimeUnit.SECONDS).version }.sorted()
+
+            assertEquals(listOf(2, 3, 4, 5), savedVersions)
+            val persistedVersions = scheduleRepository.findByRoomId(fixture.schedule.room.id)
+                .filter { it.id != fixture.schedule.id }
+                .map { it.version }
+                .sorted()
+            assertEquals(listOf(2, 3, 4, 5), persistedVersions)
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
     private fun createFixture(isConfirmed: Boolean = true): Fixture {
         val suffix = System.nanoTime()
         val host = userRepository.save(
@@ -184,6 +238,46 @@ class ScheduleServiceTest(
             .toInstant()
 
         return Fixture(host, schedule, newPlace, windowStart, windowEnd)
+    }
+
+    private fun generatedOption(userId: Long, placeId: Long): ScheduleOptionDraft {
+        val start = Instant.parse("2026-06-01T00:00:00Z")
+        return ScheduleOptionDraft(
+            optionType = ScheduleOptionType.BALANCED,
+            label = "균형형",
+            summary = "동시 저장 테스트",
+            groupSatisfaction = 90,
+            slots = listOf(
+                ScheduleSlotDraft(
+                    orderIndex = 1,
+                    slotType = SlotType.COMMON,
+                    targetUserId = null,
+                    reasonAxis = ReasonAxis.COMMON,
+                    reasonText = "공통 선호 장소",
+                    startTime = start,
+                    endTime = start.plusSeconds(3600),
+                    placeId = placeId,
+                    placeName = "태안 안면도 꽃지해수욕장",
+                    placeAddress = "충청남도 태안군 안면읍 승언리",
+                    isHiddenGem = false,
+                )
+            ),
+            satisfactionByUser = listOf(
+                SatisfactionDraft(
+                    userId = userId,
+                    score = 90,
+                    breakdown = SatisfactionDraft.Breakdown(
+                        overall = 90,
+                        byAxis = mapOf(ScoreAxis.MOBILITY to 90.0),
+                    ),
+                )
+            ),
+            llmProvider = "fallback",
+            llmAttemptedProvider = "fallback",
+            llmLatencyMs = null,
+            fallbackUsed = true,
+            llmFallbackReason = "test",
+        )
     }
 
     private fun place(tourApiId: String, name: String, address: String): Place {
