@@ -203,6 +203,34 @@ class ConsensusServiceTest {
     }
 
     @Test
+    fun `multi day schedule can expand to nearby localities when one locality lacks enough unique places`() = runBlocking {
+        val options = consensusService.buildScheduleOptions(
+            context(
+                destination = "충남",
+                startTime = "09:00",
+                endTime = "12:00",
+                members = members(2),
+                places = nearbyMultiLocalityPlaces(),
+                tripDate = "2026-06-01",
+                tripEndDate = "2026-06-03",
+            )
+        )
+
+        options.forEach { option ->
+            assertEquals(9, option.slots.size)
+            assertEquals(
+                option.slots.size,
+                option.slots.map { it.placeId }.toSet().size,
+                "option ${option.optionType} repeated a place instead of expanding to nearby localities",
+            )
+            assertTrue(
+                option.slots.map { primaryLocality(it.placeAddress) }.toSet().size > 1,
+                "option ${option.optionType} should be allowed to cross nearby localities across trip days",
+            )
+        }
+    }
+
+    @Test
     fun `schedule generation reports missing candidates instead of rejecting non Chungnam destination`() {
         val error = assertThrows(DomainException::class.java) {
             runBlocking {
@@ -295,6 +323,36 @@ class ConsensusServiceTest {
             latitude = (latitude ?: 36.0) + id * 0.00001,
             longitude = (longitude ?: 127.0) + id * 0.00001,
         )
+    }
+
+    private fun nearbyMultiLocalityPlaces(): List<PlaceCandidate> {
+        val localities = listOf(
+            Triple("충청남도 예산군 예산읍", 36.68, 126.85),
+            Triple("충청남도 아산시 온천동", 36.78, 127.00),
+            Triple("충청남도 천안시 동남구", 36.81, 127.15),
+        )
+        val categories = listOf("tourist_attraction", "restaurant", "cultural_facility")
+        return localities.flatMapIndexed { localityIndex, (address, baseLat, baseLon) ->
+            (1..3).map { index ->
+                PlaceCandidate(
+                    id = (localityIndex * 100 + index).toLong(),
+                    name = "nearby-$localityIndex-$index",
+                    address = "$address 테스트로 $index",
+                    latitude = baseLat + index * 0.001,
+                    longitude = baseLon + index * 0.001,
+                    category = categories[(index - 1) % categories.size],
+                    mobilityScore = 60 + index,
+                    photoScore = 60 + index,
+                    budgetScore = 60 + index,
+                    themeScore = 60 + index,
+                    metadataTags = mapOf("hiddenGem" to (index == 2)),
+                    operatingHours = mapOf("status" to "always"),
+                    externalPopularityScore = if (index == 1) 80 else 35,
+                    externalSignalConfidence = 80,
+                    isRegionalBenefit = index != 1,
+                )
+            }
+        }
     }
 
     private fun mixedLocalityPlaces(): List<PlaceCandidate> {
