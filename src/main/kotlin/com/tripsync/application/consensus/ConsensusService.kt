@@ -774,7 +774,7 @@ class ConsensusService(
             broadlyPreferredUnused.isNotEmpty() -> broadlyPreferredUnused
             currentOptionUnused.isNotEmpty() -> currentOptionUnused
             broadlyCurrentOptionUnused.isNotEmpty() -> broadlyCurrentOptionUnused
-            else -> pool
+            else -> emptyList()
         }
 
         return pool.distinctBy { normalizedPlaceName(it) }.sortedByDescending {

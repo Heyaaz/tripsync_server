@@ -187,6 +187,7 @@ class OpenAiClient(
             $slotDescriptions
 
             각 슬롯의 후보 장소 중에서 가장 적합한 장소를 선택하고, 일정 전체 요약을 50자 이내로 개선해주세요.
+            같은 일정 안에서는 동일한 장소 ID를 두 번 이상 선택하지 마세요.
 
             응답 형식:
             {
@@ -259,6 +260,10 @@ class OpenAiClient(
         }
         if (hasInvalidSelection) {
             throw LlmParseException(LlmService.FallbackReason.RESPONSE_SCHEMA_INVALID, "LLM slots contain place selection outside shortlist")
+        }
+
+        if (result.slots.map { it.placeId }.toSet().size != result.slots.size) {
+            throw LlmParseException(LlmService.FallbackReason.RESPONSE_SCHEMA_INVALID, "LLM slots contain duplicated place selection")
         }
     }
 

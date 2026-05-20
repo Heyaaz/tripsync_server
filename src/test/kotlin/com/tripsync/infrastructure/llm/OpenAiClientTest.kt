@@ -115,6 +115,29 @@ class OpenAiClientTest {
     }
 
     @Test
+    fun `validate refinement rejects duplicated place selections in one schedule`() {
+        val result = LlmService.RefinementResult(
+            summary = "요약",
+            provider = "openai/gpt-test",
+            latencyMs = 10,
+            slots = listOf(
+                LlmService.RefinedSlot(orderIndex = 1, placeId = 10, reason = "첫 슬롯"),
+                LlmService.RefinedSlot(orderIndex = 2, placeId = 10, reason = "중복 슬롯"),
+            ),
+        )
+        val slotPlan = listOf(
+            shortlist(orderIndex = 1, placeId = 10),
+            shortlist(orderIndex = 2, placeId = 10),
+        )
+
+        val error = assertThrows(OpenAiClient.LlmParseException::class.java) {
+            client.validateRefinement(result, slotPlan)
+        }
+
+        assertEquals(LlmService.FallbackReason.RESPONSE_SCHEMA_INVALID, error.reason)
+    }
+
+    @Test
     fun `parse response classifies malformed json as parse failure`() {
         val error = assertThrows(OpenAiClient.LlmParseException::class.java) {
             client.parseResponse("not-json", latencyMs = 1)

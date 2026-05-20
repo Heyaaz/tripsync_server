@@ -164,6 +164,25 @@ class ConsensusServiceTest {
     }
 
     @Test
+    fun `schedule generation rejects a single option when unique places are fewer than slots`() {
+        val error = assertThrows(DomainException::class.java) {
+            runBlocking {
+                consensusService.buildScheduleOptions(
+                    context(
+                        destination = "공주시",
+                        startTime = "09:00",
+                        endTime = "12:00",
+                        members = members(2),
+                        places = places("충청남도 공주시").take(2),
+                    )
+                )
+            }
+        }
+
+        assertEquals("PLACE_CANDIDATE_EMPTY", error.code)
+    }
+
+    @Test
     fun `multi day schedule creates separate slots for each requested date`() = runBlocking {
         val options = consensusService.buildScheduleOptions(
             context(
