@@ -135,6 +135,36 @@ class ScheduleServiceTest(
     }
 
     @Test
+    fun `generated schedule save replaces duplicated places before persistence`() {
+        val fixture = createFixture(isConfirmed = false)
+        val dto = GenerateScheduleDto(
+            destination = "충남",
+            tripDate = "2026-06-01",
+            startTime = "09:00",
+            endTime = "12:00",
+        )
+
+        val saved = generationPersistenceService.saveGeneratedOptions(
+            roomId = fixture.schedule.room.id,
+            dto = dto,
+            options = listOf(duplicatedGeneratedOption(fixture.host.id, fixture.newPlace.id)),
+            personaValidationByType = emptyMap(),
+        )
+
+        val persistedSlots = scheduleSlotRepository.findAll()
+            .filter { it.schedule.id == saved.options.first().scheduleId }
+            .sortedBy { it.orderIndex }
+
+        assertEquals(2, persistedSlots.size)
+        assertEquals(2, persistedSlots.map { it.place.id }.toSet().size)
+        assertEquals(
+            2,
+            persistedSlots.map { normalizePlaceName(it.place.name) }.toSet().size,
+            "schedule save must not persist repeated visible place names",
+        )
+    }
+
+    @Test
     fun `concurrent generated schedule saves allocate different versions`() {
         val fixture = createFixture(isConfirmed = false)
         val workers = 4
@@ -278,6 +308,44 @@ class ScheduleServiceTest(
             fallbackUsed = true,
             llmFallbackReason = "test",
         )
+    }
+
+    private fun duplicatedGeneratedOption(userId: Long, placeId: Long): ScheduleOptionDraft {
+        val start = Instant.parse("2026-06-01T00:00:00Z")
+        return generatedOption(userId, placeId).copy(
+            slots = listOf(
+                ScheduleSlotDraft(
+                    orderIndex = 1,
+                    slotType = SlotType.COMMON,
+                    targetUserId = null,
+                    reasonAxis = ReasonAxis.COMMON,
+                    reasonText = "첫 장소",
+                    startTime = start,
+                    endTime = start.plusSeconds(3600),
+                    placeId = placeId,
+                    placeName = "태안 안면도 꽃지해수욕장",
+                    placeAddress = "충청남도 태안군 안면읍 승언리",
+                    isHiddenGem = false,
+                ),
+                ScheduleSlotDraft(
+                    orderIndex = 2,
+                    slotType = SlotType.COMMON,
+                    targetUserId = null,
+                    reasonAxis = ReasonAxis.COMMON,
+                    reasonText = "중복 장소",
+                    startTime = start.plusSeconds(3600),
+                    endTime = start.plusSeconds(7200),
+                    placeId = placeId,
+                    placeName = "태안 안면도 꽃지해수욕장",
+                    placeAddress = "충청남도 태안군 안면읍 승언리",
+                    isHiddenGem = false,
+                ),
+            ),
+        )
+    }
+
+    private fun normalizePlaceName(name: String): String {
+        return name.trim().lowercase().replace(Regex("[\\s\\p{Punct}]+"), "")
     }
 
     private fun place(tourApiId: String, name: String, address: String): Place {
