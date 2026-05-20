@@ -91,4 +91,6 @@ data class OptionContext(
     val endTime: String,
     val members: List<MemberSnapshot>,
     val places: List<PlaceCandidate>,
+    val recentPlaceIds: Set<Long> = emptySet(),
+    val diversitySalt: Long = 0L,
 )

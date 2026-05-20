@@ -570,6 +570,8 @@ class ConsensusService(
                 mustBeHiddenGem = index == forcedHiddenGemIndex,
                 tripDate = tripDate,
                 profile = profile,
+                recentPlaceIds = context.recentPlaceIds,
+                diversitySalt = context.diversitySalt,
             )
             val place = rankedPlaces.firstOrNull()
                 ?: throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "PLACE_CANDIDATE_EMPTY", "일정 생성 후보 장소가 부족합니다.")
@@ -745,6 +747,8 @@ class ConsensusService(
         mustBeHiddenGem: Boolean,
         tripDate: String,
         profile: SlotSelectionProfile,
+        recentPlaceIds: Set<Long>,
+        diversitySalt: Long,
     ): List<PlaceCandidate> {
         val source = if (mustBeHiddenGem) places.filter { isHiddenGem(it) } else places
         var pool = if (source.isNotEmpty()) source else places
@@ -793,7 +797,7 @@ class ConsensusService(
         }
 
         return pool.distinctBy { normalizedPlaceName(it) }.sortedByDescending {
-            placeRankingScore(it, targetVector, previousPlace, preferHiddenGem, usedPlaceIds + avoidPlaceIds, tripDate, profile)
+            placeRankingScore(it, targetVector, previousPlace, preferHiddenGem, usedPlaceIds + avoidPlaceIds, recentPlaceIds, tripDate, profile, diversitySalt)
         }
     }
 
@@ -823,11 +827,14 @@ class ConsensusService(
         previousPlace: PlaceCandidate?,
         preferHiddenGem: Boolean,
         usedPlaceIds: Set<Long>,
+        recentPlaceIds: Set<Long>,
         tripDate: String,
         profile: SlotSelectionProfile,
+        diversitySalt: Long,
     ): Double {
         var score = calculateVectorMatch(targetVector, placeScores(place))
         if (usedPlaceIds.contains(place.id)) score -= 0.2
+        if (recentPlaceIds.contains(place.id)) score -= 0.28
         if (previousPlace != null && previousPlace.category == place.category) score -= 0.08
         if (previousPlace != null) {
             val distance = distanceKm(previousPlace, place)
@@ -850,7 +857,15 @@ class ConsensusService(
         }
 
         score += placeCategoryModifier(place, tripDate, profile)
+        score += diversityJitter(place.id, diversitySalt)
         return score
+    }
+
+    private fun diversityJitter(placeId: Long, salt: Long): Double {
+        if (salt == 0L) return 0.0
+        val mixed = placeId * 1103515245L + salt * 12345L
+        val bucket = Math.floorMod(mixed, 1000L)
+        return bucket / 1000.0 * 0.04
     }
 
     private fun distanceKm(from: PlaceCandidate, to: PlaceCandidate): Double? {
