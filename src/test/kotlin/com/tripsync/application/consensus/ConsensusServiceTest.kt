@@ -69,6 +69,98 @@ class ConsensusServiceTest {
         options.forEach { option ->
             assertEquals("08:00", option.slots.first().startTime.toSeoulTime())
             assertEquals("12:00", option.slots.last().endTime.toSeoulTime())
+            assertEquals(3, option.slots.size)
+        }
+    }
+
+    @Test
+    fun `broad destination keeps each option inside one primary locality`() = runBlocking {
+        val options = consensusService.buildScheduleOptions(
+            context(
+                destination = "충남",
+                startTime = "09:00",
+                endTime = "18:00",
+                members = members(3),
+                places = mixedLocalityPlaces(),
+            )
+        )
+
+        options.forEach { option ->
+            val localities = option.slots.map { primaryLocality(it.placeAddress) }.toSet()
+            assertEquals(1, localities.size, "option ${option.optionType} crossed localities: $localities")
+        }
+        val optionLocalities = options.map { option -> primaryLocality(option.slots.first().placeAddress) }.toSet()
+        assertEquals(3, optionLocalities.size, "three recommendation options must not collapse into the same locality")
+        val optionPlaceSets = options.map { option -> option.slots.map { it.placeId }.toSet() }
+        assertEquals(3, optionPlaceSets.toSet().size, "three recommendation options must not return the same place set")
+    }
+
+    @Test
+    fun `same time slot does not repeat the same place across recommendation options`() = runBlocking {
+        val options = consensusService.buildScheduleOptions(
+            context(
+                destination = "공주시",
+                startTime = "09:00",
+                endTime = "18:00",
+                members = members(3),
+                places = places("충청남도 공주시"),
+            )
+        )
+
+        val slotsByOrder = options.flatMap { option -> option.slots }.groupBy { it.orderIndex }
+        slotsByOrder.forEach { (orderIndex, slots) ->
+            assertEquals(
+                slots.size,
+                slots.map { it.placeId }.toSet().size,
+                "slot $orderIndex repeated the same place across recommendation options",
+            )
+            assertEquals(
+                slots.size,
+                slots.map { "${it.placeName}|${it.placeAddress}" }.toSet().size,
+                "slot $orderIndex repeated a semantically identical place across recommendation options",
+            )
+        }
+    }
+
+    @Test
+    fun `same time slot does not repeat semantically duplicated places with different ids`() = runBlocking {
+        val options = consensusService.buildScheduleOptions(
+            context(
+                destination = "공주시",
+                startTime = "09:00",
+                endTime = "18:00",
+                members = members(3),
+                places = placesWithDuplicatedNames("충청남도 공주시"),
+            )
+        )
+
+        val slotsByOrder = options.flatMap { option -> option.slots }.groupBy { it.orderIndex }
+        slotsByOrder.forEach { (orderIndex, slots) ->
+            assertEquals(
+                slots.size,
+                slots.map { normalizePlaceName(it.placeName) }.toSet().size,
+                "slot $orderIndex repeated the same visible place name across recommendation options",
+            )
+        }
+    }
+
+    @Test
+    fun `multi day schedule creates separate slots for each requested date`() = runBlocking {
+        val options = consensusService.buildScheduleOptions(
+            context(
+                destination = "충남",
+                startTime = "09:00",
+                endTime = "12:00",
+                members = members(2),
+                places = places("충청남도 공주시"),
+                tripDate = "2026-06-01",
+                tripEndDate = "2026-06-02",
+            )
+        )
+
+        options.forEach { option ->
+            val dates = option.slots.map { it.startTime.atZone(ZoneId.of("Asia/Seoul")).toLocalDate() }.toSet()
+            assertEquals(setOf(java.time.LocalDate.parse("2026-06-01"), java.time.LocalDate.parse("2026-06-02")), dates)
         }
     }
 
@@ -97,10 +189,13 @@ class ConsensusServiceTest {
         endTime: String,
         members: List<MemberSnapshot>,
         places: List<PlaceCandidate>,
+        tripDate: String = "2026-06-01",
+        tripEndDate: String? = null,
     ) = OptionContext(
         roomId = 1L,
         destination = destination,
-        tripDate = "2026-06-01",
+        tripDate = tripDate,
+        tripEndDate = tripEndDate,
         startTime = startTime,
         endTime = endTime,
         members = members,
@@ -130,6 +225,8 @@ class ConsensusServiceTest {
                 id = index.toLong(),
                 name = "place-$index",
                 address = "$addressPrefix $index",
+                latitude = 36.0 + index * 0.001,
+                longitude = 127.0 + index * 0.001,
                 category = categories[(index - 1) % categories.size],
                 mobilityScore = 30 + index * 3,
                 photoScore = 80 - index,
@@ -139,6 +236,68 @@ class ConsensusServiceTest {
                 operatingHours = mapOf("status" to "always"),
             )
         }
+    }
+
+    private fun placesWithDuplicatedNames(addressPrefix: String): List<PlaceCandidate> {
+        val base = places(addressPrefix).toMutableList()
+        base.addAll(
+            listOf(
+                base[0].copyCandidate(id = 101, address = "$addressPrefix 상세주소-중복-1"),
+                base[1].copyCandidate(id = 102, address = "$addressPrefix 상세주소-중복-2"),
+                base[2].copyCandidate(id = 103, address = "$addressPrefix 상세주소-중복-3"),
+            )
+        )
+        return base
+    }
+
+    private fun PlaceCandidate.copyCandidate(id: Long, address: String): PlaceCandidate {
+        return copy(
+            id = id,
+            address = address,
+            latitude = (latitude ?: 36.0) + id * 0.00001,
+            longitude = (longitude ?: 127.0) + id * 0.00001,
+        )
+    }
+
+    private fun mixedLocalityPlaces(): List<PlaceCandidate> {
+        val localities = listOf(
+            "충청남도 서천군 장항읍",
+            "충청남도 금산군 금산읍",
+            "충청남도 예산군 덕산면",
+        )
+        return localities.flatMapIndexed { localityIndex, locality ->
+            (1..8).map { index ->
+                PlaceCandidate(
+                    id = (localityIndex * 100 + index).toLong(),
+                    name = "place-$localityIndex-$index",
+                    address = "$locality 테스트로 $index",
+                    latitude = 36.0 + localityIndex * 0.4 + index * 0.001,
+                    longitude = 126.5 + localityIndex * 0.4 + index * 0.001,
+                    category = if (index % 4 == 0) "restaurant" else "tourist_attraction",
+                    mobilityScore = 55,
+                    photoScore = 55,
+                    budgetScore = 55,
+                    themeScore = 55,
+                    metadataTags = mapOf("hiddenGem" to (index % 3 == 0)),
+                    operatingHours = mapOf("status" to "always"),
+                    externalPopularityScore = when (index) {
+                        1 -> 85
+                        2, 3 -> 30
+                        else -> 50
+                    },
+                    externalSignalConfidence = 90,
+                    isRegionalBenefit = index in listOf(2, 3),
+                )
+            }
+        }
+    }
+
+    private fun primaryLocality(address: String): String {
+        return Regex("([가-힣]+(?:시|군))").find(address)?.value ?: address
+    }
+
+    private fun normalizePlaceName(name: String): String {
+        return name.trim().lowercase().replace(Regex("[\\s\\p{Punct}]+"), "")
     }
 
     private fun java.time.Instant.toSeoulTime(): String {

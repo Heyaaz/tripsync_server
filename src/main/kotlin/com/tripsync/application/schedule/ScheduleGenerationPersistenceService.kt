@@ -14,6 +14,7 @@ import com.tripsync.domain.enums.TripRoomStatus
 import com.tripsync.domain.enums.YnFlag
 import com.tripsync.domain.repository.PlaceQueryRepository
 import com.tripsync.domain.repository.PlaceRepository
+import com.tripsync.domain.repository.ExternalPopularityMetricRepository
 import com.tripsync.domain.repository.RoomMemberProfileRepository
 import com.tripsync.domain.repository.SatisfactionScoreRepository
 import com.tripsync.domain.repository.ScheduleRepository
@@ -32,6 +33,7 @@ class ScheduleGenerationPersistenceService(
     private val roomMemberProfileRepository: RoomMemberProfileRepository,
     private val placeRepository: PlaceRepository,
     private val placeQueryRepository: PlaceQueryRepository,
+    private val externalPopularityMetricRepository: ExternalPopularityMetricRepository,
     private val userRepository: UserRepository,
     private val accessPolicy: ScheduleAccessPolicy,
 ) {
@@ -60,11 +62,16 @@ class ScheduleGenerationPersistenceService(
         }
 
         val places = placeQueryRepository.findScheduleCandidates(destination)
+        val metricsByPlaceId = externalPopularityMetricRepository.findByPlaceIdIn(places.map { it.id })
+            .associateBy { it.place.id }
         val placeCandidates = places.map {
+            val metric = metricsByPlaceId[it.id]
             PlaceCandidate(
                 id = it.id,
                 name = it.name,
                 address = it.address,
+                latitude = it.latitude.toDouble(),
+                longitude = it.longitude.toDouble(),
                 category = it.category,
                 mobilityScore = it.mobilityScore,
                 photoScore = it.photoScore,
@@ -72,6 +79,9 @@ class ScheduleGenerationPersistenceService(
                 themeScore = it.themeScore,
                 metadataTags = it.metadataTags,
                 operatingHours = it.operatingHours,
+                externalPopularityScore = metric?.normalizedPopularityScore,
+                externalSignalConfidence = externalSignalConfidence(metric),
+                isRegionalBenefit = isRegionalBenefit(it.metadataTags, metric?.normalizedPopularityScore),
             )
         }
 
@@ -174,6 +184,25 @@ class ScheduleGenerationPersistenceService(
         val roomId = existing.room.id
         accessPolicy.validateHost(roomId, userId)
         return roomId
+    }
+
+    private fun externalSignalConfidence(metric: com.tripsync.domain.entity.ExternalPopularityMetric?): Int {
+        if (metric == null || metric.normalizedPopularityScore == null) return 0
+        var confidence = 40
+        if (metric.naverSearchTrendScore != null) confidence += 25
+        if ((metric.googleUserRatingCount ?: 0) > 0) confidence += 25
+        if (metric.googleRating != null) confidence += 10
+        return confidence.coerceIn(0, 100)
+    }
+
+    private fun isRegionalBenefit(metadataTags: Map<String, Any>?, externalPopularityScore: Int?): Boolean {
+        val tagList = metadataTags?.get("tags") as? List<*>
+        val tagged = tagList?.any { it in listOf("hidden_gem", "population_decline", "regional_benefit") } == true ||
+            metadataTags?.get("hiddenGem") == true ||
+            metadataTags?.get("populationDeclineArea") == true ||
+            metadataTags?.get("regionalBenefit") == true ||
+            metadataTags?.get("regionType") == "population_decline"
+        return tagged || (externalPopularityScore != null && externalPopularityScore <= 35)
     }
 }
 

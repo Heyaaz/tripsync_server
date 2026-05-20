@@ -19,6 +19,8 @@ data class PlaceCandidate(
     val id: Long,
     val name: String,
     val address: String,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
     val category: String,
     val mobilityScore: Int,
     val photoScore: Int,
@@ -26,6 +28,9 @@ data class PlaceCandidate(
     val themeScore: Int,
     val metadataTags: Map<String, Any>? = null,
     val operatingHours: Map<String, Any>? = null,
+    val externalPopularityScore: Int? = null,
+    val externalSignalConfidence: Int = 0,
+    val isRegionalBenefit: Boolean = false,
 )
 
 data class ConflictAxisAnalysis(
@@ -81,6 +86,7 @@ data class OptionContext(
     val roomId: Long,
     val destination: String,
     val tripDate: String,
+    val tripEndDate: String? = null,
     val startTime: String,
     val endTime: String,
     val members: List<MemberSnapshot>,

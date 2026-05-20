@@ -50,6 +50,7 @@ class SecurityConfig(
                     "/tpti/questions",
                     "/share/**",
                     "/rooms/share/**",
+                    "/places/*/photo",
                     "/actuator/health",
                 ).permitAll()
                 it.anyRequest().authenticated()

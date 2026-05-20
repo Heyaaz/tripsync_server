@@ -10,6 +10,7 @@ import org.springframework.stereotype.Repository
 @Repository
 interface ScheduleRepository : JpaRepository<Schedule, Long> {
     fun findByRoomIdAndDelYn(roomId: Long, delYn: YnFlag): List<Schedule>
+    fun findByRoomId(roomId: Long): List<Schedule>
     fun findTopByRoomIdAndDelYnOrderByVersionDesc(roomId: Long, delYn: YnFlag): Schedule?
 
     @Query(
