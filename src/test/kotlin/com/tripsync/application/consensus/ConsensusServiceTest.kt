@@ -145,6 +145,25 @@ class ConsensusServiceTest {
     }
 
     @Test
+    fun `schedule generation reuses cross option candidates instead of failing when candidates are scarce`() = runBlocking {
+        val options = consensusService.buildScheduleOptions(
+            context(
+                destination = "공주시",
+                startTime = "09:00",
+                endTime = "10:00",
+                members = members(2),
+                places = places("충청남도 공주시").take(2),
+            )
+        )
+
+        assertEquals(3, options.size)
+        options.forEach { option ->
+            assertEquals(1, option.slots.size)
+            assertTrue(option.slots.first().placeAddress.contains("공주시"))
+        }
+    }
+
+    @Test
     fun `multi day schedule creates separate slots for each requested date`() = runBlocking {
         val options = consensusService.buildScheduleOptions(
             context(

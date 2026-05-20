@@ -554,13 +554,15 @@ class ConsensusService(
         val slots = targets.mapIndexed { index, target ->
             val profile = buildSlotSelectionProfile(target.startTime, target.endTime, index + 1, targets.size)
             val orderIndex = index + 1
-            val blockedPlaceIds = chosenPlaces.map { it.id }.toSet() + avoidPlaceIdsByOrder[orderIndex].orEmpty()
-            val blockedPlaceKeys = chosenPlaces.flatMap { placeCandidateKeys(it) }.toSet() + avoidPlaceKeysByOrder[orderIndex].orEmpty()
+            val currentOptionPlaceIds = chosenPlaces.map { it.id }.toSet()
+            val currentOptionPlaceKeys = chosenPlaces.flatMap { placeCandidateKeys(it) }.toSet()
             val rankedPlaces = rankPlaces(
                 targetVector = target.scores,
                 places = places,
-                usedPlaceIds = blockedPlaceIds,
-                usedPlaceKeys = blockedPlaceKeys,
+                usedPlaceIds = currentOptionPlaceIds,
+                usedPlaceKeys = currentOptionPlaceKeys,
+                avoidPlaceIds = avoidPlaceIdsByOrder[orderIndex].orEmpty(),
+                avoidPlaceKeys = avoidPlaceKeysByOrder[orderIndex].orEmpty(),
                 previousPlace = chosenPlaces.lastOrNull(),
                 preferHiddenGem = preferHiddenGem,
                 mustBeHiddenGem = index == forcedHiddenGemIndex,
@@ -721,6 +723,8 @@ class ConsensusService(
         places: List<PlaceCandidate>,
         usedPlaceIds: Set<Long>,
         usedPlaceKeys: Set<String>,
+        avoidPlaceIds: Set<Long>,
+        avoidPlaceKeys: Set<String>,
         previousPlace: PlaceCandidate?,
         preferHiddenGem: Boolean,
         mustBeHiddenGem: Boolean,
@@ -746,19 +750,35 @@ class ConsensusService(
             if (restaurants.isNotEmpty()) pool = restaurants
         }
 
-        val hardExcludedPlaceKeys = usedPlaceKeys + places
+        val currentOptionPlaceKeys = usedPlaceKeys + places
             .filter { it.id in usedPlaceIds }
             .flatMap { placeCandidateKeys(it) }
             .toSet()
-        val unusedPool = pool.filter { it.id !in usedPlaceIds && placeCandidateKeys(it).none { key -> key in hardExcludedPlaceKeys } }
-        pool = if (unusedPool.isNotEmpty()) {
-            unusedPool
-        } else {
-            places.filter { it.id !in usedPlaceIds && placeCandidateKeys(it).none { key -> key in hardExcludedPlaceKeys } }
+        val softAvoidPlaceKeys = avoidPlaceKeys + places
+            .filter { it.id in avoidPlaceIds }
+            .flatMap { placeCandidateKeys(it) }
+            .toSet()
+        fun List<PlaceCandidate>.withoutCurrentOptionPlaces(): List<PlaceCandidate> = filter {
+            it.id !in usedPlaceIds && placeCandidateKeys(it).none { key -> key in currentOptionPlaceKeys }
+        }
+        fun List<PlaceCandidate>.withoutSoftAvoidPlaces(): List<PlaceCandidate> = filter {
+            it.id !in avoidPlaceIds && placeCandidateKeys(it).none { key -> key in softAvoidPlaceKeys }
+        }
+
+        val currentOptionUnused = pool.withoutCurrentOptionPlaces()
+        val preferredUnused = currentOptionUnused.withoutSoftAvoidPlaces()
+        val broadlyPreferredUnused = places.withoutCurrentOptionPlaces().withoutSoftAvoidPlaces()
+        val broadlyCurrentOptionUnused = places.withoutCurrentOptionPlaces()
+        pool = when {
+            preferredUnused.isNotEmpty() -> preferredUnused
+            broadlyPreferredUnused.isNotEmpty() -> broadlyPreferredUnused
+            currentOptionUnused.isNotEmpty() -> currentOptionUnused
+            broadlyCurrentOptionUnused.isNotEmpty() -> broadlyCurrentOptionUnused
+            else -> pool
         }
 
         return pool.distinctBy { normalizedPlaceName(it) }.sortedByDescending {
-            placeRankingScore(it, targetVector, previousPlace, preferHiddenGem, usedPlaceIds, tripDate, profile)
+            placeRankingScore(it, targetVector, previousPlace, preferHiddenGem, usedPlaceIds + avoidPlaceIds, tripDate, profile)
         }
     }
 
