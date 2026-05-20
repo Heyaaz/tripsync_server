@@ -7,6 +7,8 @@ import com.tripsync.domain.enums.ReasonAxis
 import com.tripsync.domain.enums.ScheduleOptionType
 import com.tripsync.domain.enums.ScoreAxis
 import com.tripsync.domain.enums.SlotType
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import mu.KotlinLogging
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
@@ -99,7 +101,7 @@ class ConsensusService(
 
         val usedPlaceIdsByOrder = mutableMapOf<Int, MutableSet<Long>>()
         val usedPlaceKeysByOrder = mutableMapOf<Int, MutableSet<String>>()
-        val balanced = materializeOption(
+        val balanced = prepareOption(
             optionType = ScheduleOptionType.BALANCED,
             label = "균형형",
             summary = "모두가 조금씩 만족하는 안전한 선택",
@@ -117,15 +119,13 @@ class ConsensusService(
             places = optionPlaceScopes.getValue(ScheduleOptionType.BALANCED),
             threshold = 65,
             preferHiddenGem = false,
-            members = context.members,
             tripDate = context.tripDate,
-            analysis = analysis,
             context = context,
             avoidPlaceIdsByOrder = usedPlaceIdsByOrder,
             avoidPlaceKeysByOrder = usedPlaceKeysByOrder,
-        ).also { rememberUsedPlacesByOrder(usedPlaceIdsByOrder, usedPlaceKeysByOrder, it) }
+        ).also { rememberUsedPlacesByOrder(usedPlaceIdsByOrder, usedPlaceKeysByOrder, it.slots) }
 
-        val individual = materializeOption(
+        val individual = prepareOption(
             optionType = ScheduleOptionType.INDIVIDUAL,
             label = "개성형",
             summary = "각자의 취향이 살아있는 교대 배분 일정",
@@ -133,15 +133,13 @@ class ConsensusService(
             places = optionPlaceScopes.getValue(ScheduleOptionType.INDIVIDUAL),
             threshold = 60,
             preferHiddenGem = false,
-            members = context.members,
             tripDate = context.tripDate,
-            analysis = analysis,
             context = context,
             avoidPlaceIdsByOrder = usedPlaceIdsByOrder,
             avoidPlaceKeysByOrder = usedPlaceKeysByOrder,
-        ).also { rememberUsedPlacesByOrder(usedPlaceIdsByOrder, usedPlaceKeysByOrder, it) }
+        ).also { rememberUsedPlacesByOrder(usedPlaceIdsByOrder, usedPlaceKeysByOrder, it.slots) }
 
-        val discovery = materializeOption(
+        val discovery = prepareOption(
             optionType = ScheduleOptionType.DISCOVERY,
             label = "지역 발굴형",
             summary = "${destinationLabel(context.destination)} 숨은 명소 중심 탐험 일정",
@@ -149,15 +147,18 @@ class ConsensusService(
             places = optionPlaceScopes.getValue(ScheduleOptionType.DISCOVERY),
             threshold = 55,
             preferHiddenGem = true,
-            members = context.members,
             tripDate = context.tripDate,
-            analysis = analysis,
             context = context,
             avoidPlaceIdsByOrder = usedPlaceIdsByOrder,
             avoidPlaceKeysByOrder = usedPlaceKeysByOrder,
         )
 
-        return listOf(balanced, individual, discovery)
+        return coroutineScope {
+            val balancedDeferred = async { refinePreparedOption(balanced, context.members, analysis, context) }
+            val individualDeferred = async { refinePreparedOption(individual, context.members, analysis, context) }
+            val discoveryDeferred = async { refinePreparedOption(discovery, context.members, analysis, context) }
+            listOf(balancedDeferred.await(), individualDeferred.await(), discoveryDeferred.await())
+        }
     }
 
     private fun parseScheduleWindows(tripStartDate: String, tripEndDate: String?, startTime: String, endTime: String): List<ScheduleWindow> {
@@ -534,7 +535,7 @@ class ConsensusService(
         )
     }
 
-    private suspend fun materializeOption(
+    private fun prepareOption(
         optionType: ScheduleOptionType,
         label: String,
         summary: String,
@@ -542,13 +543,11 @@ class ConsensusService(
         places: List<PlaceCandidate>,
         threshold: Int,
         preferHiddenGem: Boolean,
-        members: List<MemberSnapshot>,
         tripDate: String,
-        analysis: GroupAnalysis,
         context: OptionContext,
         avoidPlaceIdsByOrder: Map<Int, Set<Long>>,
         avoidPlaceKeysByOrder: Map<Int, Set<String>>,
-    ): ScheduleOptionDraft {
+    ): PreparedScheduleOption {
         val chosenPlaces = mutableListOf<PlaceCandidate>()
         val forcedHiddenGemIndex = if (preferHiddenGem) pickForcedHiddenGemSlot(targets) else -1
         val shortlistedPerSlot = mutableListOf<SlotShortlist>()
@@ -608,27 +607,45 @@ class ConsensusService(
             )
         }
 
-        val llmAttempt = llmService.refineScheduleOption(
+        return PreparedScheduleOption(
             optionType = optionType,
             label = label,
             summary = summary,
+            threshold = threshold,
+            places = places,
+            slots = slots,
+            chosenPlaces = chosenPlaces,
+            shortlistedPerSlot = shortlistedPerSlot,
+        )
+    }
+
+    private suspend fun refinePreparedOption(
+        prepared: PreparedScheduleOption,
+        members: List<MemberSnapshot>,
+        analysis: GroupAnalysis,
+        context: OptionContext,
+    ): ScheduleOptionDraft {
+        val llmAttempt = llmService.refineScheduleOption(
+            optionType = prepared.optionType,
+            label = prepared.label,
+            summary = prepared.summary,
             room = RoomRef(roomId = context.roomId, destination = context.destination, tripDate = context.tripDate),
             commonAxes = analysis.commonAxes,
             priorityAxes = analysis.priorityAxes,
             members = members.map { MemberRef(it.userId, it.nickname) },
-            slotPlan = shortlistedPerSlot,
+            slotPlan = prepared.shortlistedPerSlot,
         )
         val llmRefined = llmAttempt.result
 
-        val finalSummary = llmRefined?.summary ?: summary
-        val placesById = places.associateBy { it.id }
+        val finalSummary = llmRefined?.summary ?: prepared.summary
+        val placesById = prepared.places.associateBy { it.id }
         val finalPlacesByOrder = mutableMapOf<Int, PlaceCandidate>()
         llmRefined?.slots?.forEach { slot ->
             placesById[slot.placeId]?.let { finalPlacesByOrder[slot.orderIndex] = it }
         }
 
         val refinedByOrder = llmRefined?.slots?.associateBy { it.orderIndex } ?: emptyMap()
-        val finalSlots = slots.map { slot ->
+        val finalSlots = prepared.slots.map { slot ->
             val refined = refinedByOrder[slot.orderIndex]
             val refinedPlace = refined?.let { finalPlacesByOrder[it.orderIndex] }
             if (refined == null || refinedPlace == null) {
@@ -645,19 +662,19 @@ class ConsensusService(
         }
 
         val finalPlaces = finalSlots.mapIndexed { index, slot ->
-            finalPlacesByOrder[slot.orderIndex] ?: chosenPlaces[index]
+            finalPlacesByOrder[slot.orderIndex] ?: prepared.chosenPlaces[index]
         }
 
-        val satisfactionByUser = buildSatisfaction(optionType, finalSlots, finalPlaces, members)
-        val groupSatisfaction = maxOf(threshold, satisfactionByUser.minOf { it.score })
+        val satisfactionByUser = buildSatisfaction(prepared.optionType, finalSlots, finalPlaces, members)
+        val groupSatisfaction = maxOf(prepared.threshold, satisfactionByUser.minOf { it.score })
 
         logger.info {
-            "schedule_option optionType=$optionType roomId=${context.roomId} provider=${llmRefined?.provider ?: DETERMINISTIC_PROVIDER} attemptedProvider=${llmAttempt.attemptedProvider} latencyMs=${llmAttempt.latencyMs ?: 0} fallbackUsed=${llmAttempt.fallbackUsed} fallbackReason=${llmAttempt.fallbackReason?.code ?: "none"} groupSatisfaction=$groupSatisfaction"
+            "schedule_option optionType=${prepared.optionType} roomId=${context.roomId} provider=${llmRefined?.provider ?: DETERMINISTIC_PROVIDER} attemptedProvider=${llmAttempt.attemptedProvider} latencyMs=${llmAttempt.latencyMs ?: 0} fallbackUsed=${llmAttempt.fallbackUsed} fallbackReason=${llmAttempt.fallbackReason?.code ?: "none"} groupSatisfaction=$groupSatisfaction"
         }
 
         return ScheduleOptionDraft(
-            optionType = optionType,
-            label = label,
+            optionType = prepared.optionType,
+            label = prepared.label,
             summary = finalSummary,
             groupSatisfaction = groupSatisfaction,
             slots = finalSlots,
@@ -670,12 +687,23 @@ class ConsensusService(
         )
     }
 
+    private data class PreparedScheduleOption(
+        val optionType: ScheduleOptionType,
+        val label: String,
+        val summary: String,
+        val threshold: Int,
+        val places: List<PlaceCandidate>,
+        val slots: List<ScheduleSlotDraft>,
+        val chosenPlaces: List<PlaceCandidate>,
+        val shortlistedPerSlot: List<SlotShortlist>,
+    )
+
     private fun rememberUsedPlacesByOrder(
         usedPlaceIdsByOrder: MutableMap<Int, MutableSet<Long>>,
         usedPlaceKeysByOrder: MutableMap<Int, MutableSet<String>>,
-        option: ScheduleOptionDraft,
+        slots: List<ScheduleSlotDraft>,
     ) {
-        option.slots.forEach { slot ->
+        slots.forEach { slot ->
             usedPlaceIdsByOrder.getOrPut(slot.orderIndex) { mutableSetOf() }.add(slot.placeId)
             usedPlaceKeysByOrder.getOrPut(slot.orderIndex) { mutableSetOf() }.addAll(scheduleSlotPlaceKeys(slot))
         }

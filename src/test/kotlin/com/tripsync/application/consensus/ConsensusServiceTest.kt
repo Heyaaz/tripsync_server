@@ -10,7 +10,11 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
+import org.springframework.http.HttpStatus
+import org.springframework.web.reactive.function.client.ClientResponse
 import org.springframework.web.reactive.function.client.WebClient
+import reactor.core.publisher.Mono
+import java.time.Duration
 import java.time.ZoneId
 
 class ConsensusServiceTest {
@@ -52,6 +56,44 @@ class ConsensusServiceTest {
             assertTrue(option.fallbackUsed)
             assertEquals("api_key_missing", option.llmFallbackReason)
         }
+    }
+
+    @Test
+    fun `llm refinement runs recommendation options in parallel`() = runBlocking {
+        val slowWebClient = WebClient.builder()
+            .exchangeFunction {
+                Mono.delay(Duration.ofSeconds(3))
+                    .thenReturn(ClientResponse.create(HttpStatus.OK).body("{}").build())
+            }
+            .build()
+        val parallelConsensusService = ConsensusService(
+            LlmService(
+                OpenAiClient(
+                    webClient = slowWebClient,
+                    objectMapper = ObjectMapper(),
+                    apiKey = "test-key",
+                    model = "gpt-test",
+                    timeoutSeconds = 1,
+                    meterRegistry = SimpleMeterRegistry(),
+                )
+            )
+        )
+
+        val startNanos = System.nanoTime()
+        val options = parallelConsensusService.buildScheduleOptions(
+            context(
+                destination = "공주시",
+                startTime = "09:00",
+                endTime = "12:00",
+                members = members(2),
+                places = places("충청남도 공주시"),
+            )
+        )
+        val elapsedMillis = Duration.ofNanos(System.nanoTime() - startNanos).toMillis()
+
+        assertEquals(3, options.size)
+        assertTrue(options.all { it.fallbackUsed })
+        assertTrue(elapsedMillis < 2_500, "three LLM refinements should wait once in parallel instead of timing out sequentially")
     }
 
     @Test
