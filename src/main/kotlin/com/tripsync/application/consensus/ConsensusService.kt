@@ -153,12 +153,14 @@ class ConsensusService(
             avoidPlaceKeysByOrder = usedPlaceKeysByOrder,
         )
 
-        return coroutineScope {
+        val preparedOptions = listOf(balanced, individual, discovery)
+        val refinedOptions = coroutineScope {
             val balancedDeferred = async { refinePreparedOption(balanced, context.members, analysis, context) }
             val individualDeferred = async { refinePreparedOption(individual, context.members, analysis, context) }
             val discoveryDeferred = async { refinePreparedOption(discovery, context.members, analysis, context) }
             listOf(balancedDeferred.await(), individualDeferred.await(), discoveryDeferred.await())
         }
+        return resolveCrossOptionPlaceCollisions(refinedOptions, preparedOptions, context.members)
     }
 
     private fun parseScheduleWindows(tripStartDate: String, tripEndDate: String?, startTime: String, endTime: String): List<ScheduleWindow> {
@@ -684,6 +686,83 @@ class ConsensusService(
             llmLatencyMs = llmAttempt.latencyMs,
             fallbackUsed = llmAttempt.fallbackUsed,
             llmFallbackReason = llmAttempt.fallbackReason?.code,
+        )
+    }
+
+    private fun resolveCrossOptionPlaceCollisions(
+        options: List<ScheduleOptionDraft>,
+        preparedOptions: List<PreparedScheduleOption>,
+        members: List<MemberSnapshot>,
+    ): List<ScheduleOptionDraft> {
+        val usedPlaceIdsByOrder = mutableMapOf<Int, MutableSet<Long>>()
+        val usedPlaceKeysByOrder = mutableMapOf<Int, MutableSet<String>>()
+
+        return options.zip(preparedOptions).map { (option, prepared) ->
+            val placesById = prepared.places.associateBy { it.id }
+            val currentOptionPlaceIds = mutableSetOf<Long>()
+            val currentOptionPlaceKeys = mutableSetOf<String>()
+            val adjustedSlots = option.slots.map { slot ->
+                val slotKeys = scheduleSlotPlaceKeys(slot)
+                val duplicateByOrder = slot.placeId in usedPlaceIdsByOrder[slot.orderIndex].orEmpty() ||
+                    slotKeys.any { it in usedPlaceKeysByOrder[slot.orderIndex].orEmpty() }
+                val duplicateInOption = slot.placeId in currentOptionPlaceIds || slotKeys.any { it in currentOptionPlaceKeys }
+                val adjusted = if (duplicateByOrder || duplicateInOption) {
+                    replacementSlot(slot, prepared, usedPlaceIdsByOrder[slot.orderIndex].orEmpty(), usedPlaceKeysByOrder[slot.orderIndex].orEmpty(), currentOptionPlaceIds, currentOptionPlaceKeys)
+                } else {
+                    slot
+                }
+                currentOptionPlaceIds.add(adjusted.placeId)
+                currentOptionPlaceKeys.addAll(scheduleSlotPlaceKeys(adjusted))
+                usedPlaceIdsByOrder.getOrPut(adjusted.orderIndex) { mutableSetOf() }.add(adjusted.placeId)
+                usedPlaceKeysByOrder.getOrPut(adjusted.orderIndex) { mutableSetOf() }.addAll(scheduleSlotPlaceKeys(adjusted))
+                adjusted
+            }
+
+            val adjustedPlaces = adjustedSlots.mapNotNull { placesById[it.placeId] }
+            if (adjustedPlaces.size != adjustedSlots.size) {
+                option.copy(slots = adjustedSlots)
+            } else {
+                val satisfactionByUser = buildSatisfaction(option.optionType, adjustedSlots, adjustedPlaces, members)
+                option.copy(
+                    slots = adjustedSlots,
+                    satisfactionByUser = satisfactionByUser,
+                    groupSatisfaction = maxOf(prepared.threshold, satisfactionByUser.minOf { it.score }),
+                )
+            }
+        }
+    }
+
+    private fun replacementSlot(
+        slot: ScheduleSlotDraft,
+        prepared: PreparedScheduleOption,
+        usedPlaceIdsForOrder: Set<Long>,
+        usedPlaceKeysForOrder: Set<String>,
+        currentOptionPlaceIds: Set<Long>,
+        currentOptionPlaceKeys: Set<String>,
+    ): ScheduleSlotDraft {
+        val placesById = prepared.places.associateBy { it.id }
+        val shortlistedIds = prepared.shortlistedPerSlot
+            .firstOrNull { it.orderIndex == slot.orderIndex }
+            ?.candidatePlaces
+            ?.map { it.id }
+            .orEmpty()
+        val candidateIds = (shortlistedIds + prepared.slots.map { it.placeId } + prepared.places.map { it.id }).distinct()
+        val replacement = candidateIds
+            .asSequence()
+            .mapNotNull { placesById[it] }
+            .firstOrNull { candidate ->
+                val keys = placeCandidateKeys(candidate)
+                candidate.id !in usedPlaceIdsForOrder &&
+                    candidate.id !in currentOptionPlaceIds &&
+                    keys.none { it in usedPlaceKeysForOrder } &&
+                    keys.none { it in currentOptionPlaceKeys }
+            } ?: return slot
+
+        return slot.copy(
+            placeId = replacement.id,
+            placeName = replacement.name,
+            placeAddress = replacement.address,
+            isHiddenGem = isHiddenGem(replacement),
         )
     }
 
