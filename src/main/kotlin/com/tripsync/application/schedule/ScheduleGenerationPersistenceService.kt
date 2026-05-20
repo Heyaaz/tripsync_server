@@ -4,6 +4,7 @@ import com.tripsync.domain.entity.AxisScores
 import com.tripsync.application.consensus.MemberSnapshot
 import com.tripsync.application.consensus.PlaceCandidate
 import com.tripsync.application.consensus.ScheduleOptionDraft
+import com.tripsync.application.consensus.ScheduleSlotDraft
 import com.tripsync.common.exception.DomainException
 import com.tripsync.domain.entity.Place
 import com.tripsync.domain.entity.SatisfactionScore
@@ -105,7 +106,9 @@ class ScheduleGenerationPersistenceService(
         val room = tripRoomRepository.findActiveByIdForUpdate(roomId, YnFlag.N)
             ?: throw DomainException(HttpStatus.NOT_FOUND, "ROOM_NOT_FOUND", "존재하지 않는 방입니다.")
         val version = (scheduleRepository.findTopByRoomIdAndDelYnOrderByVersionDesc(room.id, YnFlag.N)?.version ?: 0) + 1
-        val saved = options.map { option ->
+        val replacementCandidates = placeQueryRepository.findScheduleCandidates(dto.destination)
+        val saved = options.map { rawOption ->
+            val option = rawOption.copy(slots = ensureUniqueSlots(rawOption.slots, replacementCandidates))
             val personaValidation = personaValidationByType[option.optionType]
             val schedule = scheduleRepository.save(
                 Schedule(
@@ -180,6 +183,56 @@ class ScheduleGenerationPersistenceService(
         }
         return SavedScheduleGeneration(version = version, options = saved)
     }
+    private fun ensureUniqueSlots(slots: List<ScheduleSlotDraft>, replacementCandidates: List<Place>): List<ScheduleSlotDraft> {
+        if (slots.isEmpty()) return slots
+
+        val candidates = replacementCandidates
+            .filter { it.delYn == YnFlag.N }
+            .distinctBy { it.id }
+        val usedPlaceIds = mutableSetOf<Long>()
+        val usedPlaceKeys = mutableSetOf<String>()
+
+        return slots.map { slot ->
+            val slotKeys = placeKeys(slot.placeName, slot.placeAddress)
+            val isDuplicate = slot.placeId in usedPlaceIds || slotKeys.any { it in usedPlaceKeys }
+            val uniqueSlot = if (isDuplicate) {
+                candidates.firstOrNull { candidate ->
+                    candidate.id !in usedPlaceIds && placeKeys(candidate.name, candidate.address).none { it in usedPlaceKeys }
+                }?.let { replacement ->
+                    slot.copy(
+                        placeId = replacement.id,
+                        placeName = replacement.name,
+                        placeAddress = replacement.address,
+                        isHiddenGem = isHiddenGem(replacement),
+                    )
+                } ?: slot
+            } else {
+                slot
+            }
+
+            usedPlaceIds.add(uniqueSlot.placeId)
+            usedPlaceKeys.addAll(placeKeys(uniqueSlot.placeName, uniqueSlot.placeAddress))
+            uniqueSlot
+        }
+    }
+
+    private fun isHiddenGem(place: Place): Boolean {
+        return place.metadataTags?.get("hiddenGem") == true ||
+            place.metadataTags?.get("populationDeclineArea") == true ||
+            place.metadataTags?.get("regionalBenefit") == true ||
+            place.metadataTags?.get("regionType") == "population_decline"
+    }
+
+    private fun placeKeys(name: String, address: String): Set<String> {
+        val normalizedName = normalizePlaceText(name)
+        val normalizedAddress = normalizePlaceText(address)
+        return setOf(normalizedName, "$normalizedName|$normalizedAddress").filter { it.isNotBlank() }.toSet()
+    }
+
+    private fun normalizePlaceText(value: String): String {
+        return value.trim().lowercase().replace(Regex("[\\s\\p{Punct}]+"), "")
+    }
+
 
     @Transactional(readOnly = true)
     fun getRoomIdForRegeneration(scheduleId: Long, userId: Long): Long {

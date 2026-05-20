@@ -16,6 +16,7 @@ import org.springframework.stereotype.Component
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.WebClientResponseException
 import org.springframework.web.reactive.function.client.bodyToMono
+import java.time.Duration
 import java.util.concurrent.TimeUnit
 
 @Component
@@ -26,6 +27,8 @@ class OpenAiClient(
     private val apiKey: String,
     @Value("\${openai.model:gpt-4o-mini}")
     private val model: String,
+    @Value("\${openai.timeout-seconds:10}")
+    private val timeoutSeconds: Long = 10,
     private val meterRegistry: MeterRegistry,
 ) {
     private val logger = KotlinLogging.logger {}
@@ -77,6 +80,7 @@ class OpenAiClient(
                 .bodyValue(requestBody)
                 .retrieve()
                 .bodyToMono<String>()
+                .timeout(Duration.ofSeconds(timeoutSeconds.coerceAtLeast(1)))
                 .awaitSingle()
 
             val latencyMs = elapsedMillis(startNanos)

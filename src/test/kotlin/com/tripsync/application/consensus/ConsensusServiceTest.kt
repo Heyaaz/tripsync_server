@@ -4,13 +4,19 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import com.tripsync.common.exception.DomainException
 import com.tripsync.domain.entity.AxisScores
+import com.tripsync.domain.enums.ScheduleOptionType
 import com.tripsync.infrastructure.llm.OpenAiClient
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
+import org.springframework.http.HttpStatus
+import org.springframework.web.reactive.function.client.ClientResponse
 import org.springframework.web.reactive.function.client.WebClient
+import reactor.core.publisher.Mono
+import java.time.Duration
 import java.time.ZoneId
 
 class ConsensusServiceTest {
@@ -51,6 +57,75 @@ class ConsensusServiceTest {
             assertEquals("openai/gpt-4o-mini", option.llmAttemptedProvider)
             assertTrue(option.fallbackUsed)
             assertEquals("api_key_missing", option.llmFallbackReason)
+        }
+    }
+
+    @Test
+    fun `llm refinement runs recommendation options in parallel`() = runBlocking {
+        val slowWebClient = WebClient.builder()
+            .exchangeFunction {
+                Mono.delay(Duration.ofSeconds(3))
+                    .thenReturn(ClientResponse.create(HttpStatus.OK).body("{}").build())
+            }
+            .build()
+        val parallelConsensusService = ConsensusService(
+            LlmService(
+                OpenAiClient(
+                    webClient = slowWebClient,
+                    objectMapper = ObjectMapper(),
+                    apiKey = "test-key",
+                    model = "gpt-test",
+                    timeoutSeconds = 1,
+                    meterRegistry = SimpleMeterRegistry(),
+                )
+            )
+        )
+
+        val startNanos = System.nanoTime()
+        val options = parallelConsensusService.buildScheduleOptions(
+            context(
+                destination = "공주시",
+                startTime = "09:00",
+                endTime = "12:00",
+                members = members(2),
+                places = places("충청남도 공주시"),
+            )
+        )
+        val elapsedMillis = Duration.ofNanos(System.nanoTime() - startNanos).toMillis()
+
+        assertEquals(3, options.size)
+        assertTrue(options.all { it.fallbackUsed })
+        assertTrue(elapsedMillis < 2_500, "three LLM refinements should wait once in parallel instead of timing out sequentially")
+    }
+
+    @Test
+    fun `llm refined places are deduplicated across recommendation options by same order`() = runBlocking {
+        val llmConsensusService = ConsensusService(coordinatedDuplicateLlmService())
+
+        val options = llmConsensusService.buildScheduleOptions(
+            context(
+                destination = "공주시",
+                startTime = "09:00",
+                endTime = "12:00",
+                members = members(2),
+                places = places("충청남도 공주시"),
+            )
+        )
+
+        assertEquals(3, options.size)
+        assertTrue(options.all { it.llmProvider == "test/duplicate-llm" }, "test must exercise successful LLM-refined slots before deduplication")
+        val slotsByOrder = options.flatMap { it.slots }.groupBy { it.orderIndex }
+        slotsByOrder.forEach { (orderIndex, slots) ->
+            assertEquals(
+                slots.size,
+                slots.map { it.placeId }.toSet().size,
+                "slot $orderIndex repeated the same LLM-refined place across recommendation options",
+            )
+            assertEquals(
+                slots.size,
+                slots.map { normalizePlaceName(it.placeName) }.toSet().size,
+                "slot $orderIndex repeated the same LLM-refined visible place across recommendation options",
+            )
         }
     }
 
@@ -247,6 +322,66 @@ class ConsensusServiceTest {
         }
 
         assertEquals("PLACE_CANDIDATE_EMPTY", error.code)
+    }
+
+    private fun coordinatedDuplicateLlmService(): LlmService {
+        val client = OpenAiClient(
+            webClient = WebClient.create(),
+            objectMapper = ObjectMapper(),
+            apiKey = "",
+            model = "gpt-test",
+            meterRegistry = SimpleMeterRegistry(),
+        )
+        return object : LlmService(client) {
+            private val lock = Any()
+            private val requests = mutableListOf<Pair<ScheduleOptionType, List<ConsensusService.SlotShortlist>>>()
+            private val ready = CompletableDeferred<Map<Int, Long>>()
+
+            override suspend fun refineScheduleOption(
+                optionType: ScheduleOptionType,
+                label: String,
+                summary: String,
+                room: ConsensusService.RoomRef,
+                commonAxes: List<com.tripsync.domain.enums.ScoreAxis>,
+                priorityAxes: List<com.tripsync.domain.enums.ScoreAxis>,
+                members: List<ConsensusService.MemberRef>,
+                slotPlan: List<ConsensusService.SlotShortlist>,
+            ): RefinementAttempt {
+                synchronized(lock) {
+                    requests.add(optionType to slotPlan)
+                    if (requests.size == 3 && !ready.isCompleted) {
+                        val sharedPlaceByOrder = slotPlan.map { it.orderIndex }.associateWith { orderIndex ->
+                            val candidateSets = requests.map { (_, plan) ->
+                                plan.first { it.orderIndex == orderIndex }.candidatePlaces.map { candidate -> candidate.id }.toSet()
+                            }
+                            candidateSets.reduce { acc, ids -> acc.intersect(ids) }.firstOrNull()
+                                ?: candidateSets.first().first()
+                        }
+                        ready.complete(sharedPlaceByOrder)
+                    }
+                }
+                val sharedPlaceByOrder = ready.await()
+                val refinedSlots = slotPlan.map { slot ->
+                    RefinedSlot(
+                        orderIndex = slot.orderIndex,
+                        placeId = sharedPlaceByOrder.getValue(slot.orderIndex),
+                        reason = "LLM 중복 선택",
+                    )
+                }
+                return RefinementAttempt(
+                    result = RefinementResult(
+                        summary = "LLM 보정 요약",
+                        provider = "test/duplicate-llm",
+                        latencyMs = 1,
+                        slots = refinedSlots,
+                    ),
+                    attemptedProvider = "test/duplicate-llm",
+                    latencyMs = 1,
+                    fallbackUsed = false,
+                    fallbackReason = null,
+                )
+            }
+        }
     }
 
     private fun context(

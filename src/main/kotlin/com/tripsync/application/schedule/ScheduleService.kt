@@ -38,6 +38,7 @@ class ScheduleService(
         val members = generationContext.members
         val placesById = generationContext.placesById
 
+        val recentPlaceIds = latestGeneratedPlaceIds(roomId)
         val context = OptionContext(
             roomId = roomId,
             destination = dto.destination,
@@ -47,6 +48,8 @@ class ScheduleService(
             endTime = dto.endTime,
             members = members,
             places = generationContext.places,
+            recentPlaceIds = recentPlaceIds,
+            diversitySalt = System.nanoTime(),
         )
 
         val options = runBlocking { consensusService.buildScheduleOptions(context) }
@@ -74,6 +77,16 @@ class ScheduleService(
                 },
             )
         )
+    }
+
+
+    private fun latestGeneratedPlaceIds(roomId: Long): Set<Long> {
+        val schedules = scheduleRepository.findByRoomIdAndDelYn(roomId, YnFlag.N)
+        val latestVersion = schedules.maxOfOrNull { it.version } ?: return emptySet()
+        return schedules
+            .filter { it.version == latestVersion }
+            .flatMap { scheduleSlotRepository.findActivePlaceIdsByScheduleId(it.id, YnFlag.N) }
+            .toSet()
     }
 
     @Transactional(readOnly = true)
