@@ -7,6 +7,7 @@ import org.springframework.stereotype.Repository
 
 @Repository
 interface RoomMemberRepository : JpaRepository<RoomMember, Long> {
+    fun findByRoomIdAndUserId(roomId: Long, userId: Long): RoomMember?
     fun findByRoomIdAndUserIdAndDelYn(roomId: Long, userId: Long, delYn: YnFlag): RoomMember?
     fun existsByRoomIdAndUserIdAndDelYn(roomId: Long, userId: Long, delYn: YnFlag): Boolean
     fun findAllByRoomIdAndDelYn(roomId: Long, delYn: YnFlag): List<RoomMember>

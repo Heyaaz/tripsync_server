@@ -8,4 +8,5 @@ import org.springframework.stereotype.Repository
 @Repository
 interface ConflictMapRepository : JpaRepository<ConflictMap, Long> {
     fun findTopByRoomIdAndDelYnOrderByCreatedAtDesc(roomId: Long, delYn: YnFlag): ConflictMap?
+    fun findAllByRoomIdAndDelYn(roomId: Long, delYn: YnFlag): List<ConflictMap>
 }

@@ -14,6 +14,7 @@ import com.tripsync.domain.repository.*
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import java.time.Instant
 import java.time.LocalDate
 import java.util.*
 
@@ -24,6 +25,10 @@ class RoomService(
     private val roomMemberProfileRepository: RoomMemberProfileRepository,
     private val tptiResultRepository: TptiResultRepository,
     private val scheduleRepository: ScheduleRepository,
+    private val scheduleSlotRepository: ScheduleSlotRepository,
+    private val satisfactionScoreRepository: SatisfactionScoreRepository,
+    private val conflictMapRepository: ConflictMapRepository,
+    private val tripPhotoRepository: TripPhotoRepository,
     private val scheduleResponseMapper: ScheduleResponseMapper,
 ) {
 
@@ -71,8 +76,8 @@ class RoomService(
 
     @Transactional(readOnly = true)
     fun getRoom(roomId: Long, user: User): ApiResponse<Map<String, Any?>> {
-        validateRoomMember(roomId, user.id)
         val room = getActiveRoom(roomId)
+        validateRoomMember(room.id, user.id)
         val memberCount = roomMemberRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N).size
 
         return ApiResponse.ok(roomSummary(room, memberCount, includeScheduleState = true))
@@ -116,7 +121,7 @@ class RoomService(
         val room = tripRoomRepository.findByShareCodeAndDelYn(shareCode, YnFlag.N)
             ?: throw DomainException(HttpStatus.NOT_FOUND, "INVALID_SHARE_CODE", "유효하지 않은 공유 코드입니다.")
 
-        val existingMember = roomMemberRepository.findByRoomIdAndUserIdAndDelYn(room.id, user.id, YnFlag.N)
+        val existingMember = roomMemberRepository.findByRoomIdAndUserId(room.id, user.id)
         if (existingMember == null) {
             roomMemberRepository.save(
                 RoomMember(
@@ -125,6 +130,9 @@ class RoomService(
                     role = if (room.hostUser.id == user.id) RoomMemberRole.HOST else RoomMemberRole.MEMBER,
                 )
             )
+        } else {
+            existingMember.delYn = YnFlag.N
+            existingMember.role = if (room.hostUser.id == user.id) RoomMemberRole.HOST else existingMember.role
         }
 
         if (tptiResultId != null) {
@@ -135,7 +143,7 @@ class RoomService(
             upsertMemberProfile(room, user, result)
         }
 
-        val roomStatus = refreshRoomStatus(room.id)
+        val roomStatus = if (room.status == TripRoomStatus.COMPLETED) room.status else refreshRoomStatus(room.id)
         return ApiResponse.ok(
             mapOf(
                 "roomId" to room.id,
@@ -148,14 +156,15 @@ class RoomService(
 
     @Transactional(readOnly = true)
     fun getMembers(roomId: Long, user: User): ApiResponse<Map<String, Any?>> {
-        validateRoomMember(roomId, user.id)
-        val members = roomMemberRepository.findAllByRoomIdAndDelYn(roomId, YnFlag.N)
-        val profilesByUserId = roomMemberProfileRepository.findAllByRoomIdAndDelYn(roomId, YnFlag.N)
+        val room = getActiveRoom(roomId)
+        validateRoomMember(room.id, user.id)
+        val members = roomMemberRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N)
+        val profilesByUserId = roomMemberProfileRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N)
             .associateBy { it.user.id }
 
         return ApiResponse.ok(
             mapOf(
-                "roomId" to roomId,
+                "roomId" to room.id,
                 "members" to members.sortedBy { it.joinedAt }.map { member ->
                     val profile = profilesByUserId[member.user.id]
                     mapOf(
@@ -176,6 +185,52 @@ class RoomService(
                 },
             )
         )
+    }
+
+    @Transactional
+    fun deleteRoom(roomId: Long, user: User): ApiResponse<Map<String, Any?>> {
+        if (user.isGuest) {
+            throw DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "로그인한 계정으로만 여행 방을 삭제하거나 나갈 수 있습니다.")
+        }
+
+        val room = getActiveRoom(roomId)
+        val member = roomMemberRepository.findByRoomIdAndUserIdAndDelYn(room.id, user.id, YnFlag.N)
+            ?: throw DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "방 멤버만 여행 방을 삭제하거나 나갈 수 있습니다.")
+
+        if (member.role != RoomMemberRole.HOST) {
+            return leaveRoom(room, member)
+        }
+
+        val schedules = scheduleRepository.findByRoomIdAndDelYn(room.id, YnFlag.N)
+        schedules.forEach { schedule ->
+            satisfactionScoreRepository.findAllByScheduleIdAndDelYn(schedule.id, YnFlag.N).forEach { it.delYn = YnFlag.Y }
+            scheduleSlotRepository.findAllByScheduleIdAndDelYn(schedule.id, YnFlag.N).forEach { it.delYn = YnFlag.Y }
+            schedule.delYn = YnFlag.Y
+        }
+
+        val deletedAt = Instant.now()
+        tripPhotoRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N).forEach { photo ->
+            photo.delYn = YnFlag.Y
+            photo.deletedBy = user
+            photo.deletedAt = deletedAt
+        }
+        conflictMapRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N).forEach { it.delYn = YnFlag.Y }
+        roomMemberProfileRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N).forEach { it.delYn = YnFlag.Y }
+        roomMemberRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N).forEach { it.delYn = YnFlag.Y }
+        room.delYn = YnFlag.Y
+
+        return ApiResponse.ok(mapOf("roomId" to room.id, "deleted" to true, "left" to false))
+    }
+
+    private fun leaveRoom(room: TripRoom, member: RoomMember): ApiResponse<Map<String, Any?>> {
+        member.delYn = YnFlag.Y
+        roomMemberProfileRepository.findByRoomIdAndUserId(room.id, member.user.id)?.delYn = YnFlag.Y
+        satisfactionScoreRepository.findAllByScheduleRoomIdAndUserIdAndDelYn(room.id, member.user.id, YnFlag.N)
+            .forEach { it.delYn = YnFlag.Y }
+        if (room.status != TripRoomStatus.COMPLETED) {
+            refreshRoomStatus(room.id)
+        }
+        return ApiResponse.ok(mapOf("roomId" to room.id, "deleted" to false, "left" to true))
     }
 
 
