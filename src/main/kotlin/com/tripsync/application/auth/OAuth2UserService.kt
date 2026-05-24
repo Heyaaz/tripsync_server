@@ -4,12 +4,9 @@ import com.tripsync.common.dto.ApiResponse
 import com.tripsync.common.exception.DomainException
 import com.tripsync.domain.entity.User
 import com.tripsync.domain.enums.AuthProvider
-import com.tripsync.domain.enums.YnFlag
 import com.tripsync.domain.repository.UserRepository
-import mu.KotlinLogging
 import org.springframework.http.HttpStatus
 import org.springframework.security.oauth2.client.userinfo.DefaultOAuth2UserService
-import org.springframework.security.oauth2.client.userinfo.OAuth2UserRequest
 import org.springframework.security.oauth2.core.user.OAuth2User
 import org.springframework.stereotype.Service
 
@@ -18,8 +15,6 @@ class OAuth2UserService(
     private val userRepository: UserRepository,
     private val jwtTokenProvider: JwtTokenProvider,
 ) : DefaultOAuth2UserService() {
-    private val logger = KotlinLogging.logger {}
-
     fun processGoogleLogin(oAuth2User: OAuth2User): ApiResponse<Map<String, Any>> {
         val email = oAuth2User.getAttribute<String>("email")
             ?: throw DomainException(HttpStatus.BAD_REQUEST, "OAUTH_EMAIL_MISSING", "이메일 정보를 가져올 수 없습니다.")
@@ -28,33 +23,14 @@ class OAuth2UserService(
         val providerId = oAuth2User.getAttribute<String>("sub")
             ?: throw DomainException(HttpStatus.BAD_REQUEST, "OAUTH_ID_MISSING", "사용자 ID를 가져올 수 없습니다.")
 
-        val existingUser = userRepository.findByAuthProviderAndProviderUserId(AuthProvider.GOOGLE, providerId)
-
-        val user = if (existingUser != null) {
-            existingUser
-        } else {
-            userRepository.save(
-                User(
-                    nickname = name,
-                    email = email,
-                    authProvider = AuthProvider.GOOGLE,
-                    providerUserId = providerId,
-                    profileImageUrl = picture,
-                )
-            )
-        }
-
-        val token = jwtTokenProvider.generateToken(user.id, user.isGuest)
-        @Suppress("UNCHECKED_CAST")
-        return ApiResponse.ok(
-            mapOf(
-                "token" to token,
-                "userId" to user.id,
-                "nickname" to user.nickname,
-                "email" to (user.email ?: ""),
-                "authProvider" to user.authProvider.name,
-            ) as Map<String, Any>
+        val user = findOrCreateOAuthUser(
+            provider = AuthProvider.GOOGLE,
+            providerId = providerId,
+            nickname = name,
+            email = email,
+            profileImageUrl = picture,
         )
+        return authResponse(user)
     }
 
     fun processKakaoLogin(oAuth2User: OAuth2User): ApiResponse<Map<String, Any>> {
@@ -68,24 +44,37 @@ class OAuth2UserService(
         val providerId = attributes["id"]?.toString()
             ?: throw DomainException(HttpStatus.BAD_REQUEST, "OAUTH_ID_MISSING", "사용자 ID를 가져올 수 없습니다.")
 
-        val existingUser = userRepository.findByAuthProviderAndProviderUserId(AuthProvider.KAKAO, providerId)
+        val user = findOrCreateOAuthUser(
+            provider = AuthProvider.KAKAO,
+            providerId = providerId,
+            nickname = nickname,
+            email = email,
+            profileImageUrl = profileImage,
+        )
+        return authResponse(user)
+    }
 
-        val user = if (existingUser != null) {
-            existingUser
-        } else {
-            userRepository.save(
+    private fun findOrCreateOAuthUser(
+        provider: AuthProvider,
+        providerId: String,
+        nickname: String,
+        email: String?,
+        profileImageUrl: String?,
+    ): User {
+        return userRepository.findByAuthProviderAndProviderUserId(provider, providerId)
+            ?: userRepository.save(
                 User(
                     nickname = nickname,
                     email = email,
-                    authProvider = AuthProvider.KAKAO,
+                    authProvider = provider,
                     providerUserId = providerId,
-                    profileImageUrl = profileImage,
+                    profileImageUrl = profileImageUrl,
                 )
             )
-        }
+    }
 
+    private fun authResponse(user: User): ApiResponse<Map<String, Any>> {
         val token = jwtTokenProvider.generateToken(user.id, user.isGuest)
-        @Suppress("UNCHECKED_CAST")
         return ApiResponse.ok(
             mapOf(
                 "token" to token,
@@ -93,7 +82,7 @@ class OAuth2UserService(
                 "nickname" to user.nickname,
                 "email" to (user.email ?: ""),
                 "authProvider" to user.authProvider.name,
-            ) as Map<String, Any>
+            )
         )
     }
 }
