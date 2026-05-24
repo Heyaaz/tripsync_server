@@ -139,9 +139,8 @@ class ScheduleResponseMapper(
         return formatStoredSchedule(schedule).filterKeys { it in publicKeys }
     }
 
-    @Suppress("UNCHECKED_CAST")
     private fun formatLlmMetadata(schedule: Schedule): Map<String, Any?> {
-        val metadata = schedule.generationInput["llm"] as? Map<String, Any?> ?: emptyMap()
+        val metadata = schedule.generationInput["llm"] as? Map<*, *> ?: emptyMap<String, Any?>()
         val provider = schedule.llmProvider ?: metadata["provider"]
         return mapOf(
             "provider" to provider,
