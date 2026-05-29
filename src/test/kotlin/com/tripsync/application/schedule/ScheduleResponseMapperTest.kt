@@ -60,6 +60,9 @@ class ScheduleResponseMapperTest {
         val metric = ExternalPopularityMetric(
             place = place,
             normalizedPopularityScore = 82,
+            naverSearchTrendScore = 64,
+            googleRating = BigDecimal("4.5"),
+            googleUserRatingCount = 182,
             collectedAt = Instant.parse("2026-05-20T00:00:00Z"),
         )
         `when`(externalPopularityMetricRepository.findByPlaceId(place.id)).thenReturn(metric)
@@ -69,8 +72,15 @@ class ScheduleResponseMapperTest {
 
         assertEquals("https://tour.example/image.jpg", response["imageUrl"])
         assertEquals("tourapi", response["imageSource"])
+        assertNull(response["fallbackImageUrl"])
+        assertNull(response["fallbackImageSource"])
         assertEquals("popular_anchor", popularity["role"])
         assertFalse(popularity.containsKey("score"))
+        assertEquals(82, popularity["normalizedPopularityScore"])
+        assertEquals(64, popularity["naverSearchTrendScore"])
+        assertEquals(4.5, popularity["googleRating"])
+        assertEquals(182, popularity["googleUserRatingCount"])
+        assertEquals(metric.updatedAt.toString(), popularity["sourceUpdatedAt"])
     }
 
     @Test
@@ -87,6 +97,24 @@ class ScheduleResponseMapperTest {
 
         assertEquals("http://localhost:8080/api/places/${place.id}/photo", response["imageUrl"])
         assertEquals("google_places", response["imageSource"])
+    }
+
+    @Test
+    fun `place response includes Google fallback image when TourAPI image exists`() {
+        val place = place(imageUrl = "https://tour.example/image.jpg")
+        val metric = ExternalPopularityMetric(
+            place = place,
+            googlePhotoReference = "photo-ref",
+            collectedAt = Instant.parse("2026-05-20T00:00:00Z"),
+        )
+        `when`(externalPopularityMetricRepository.findByPlaceId(place.id)).thenReturn(metric)
+
+        val response = mapper.formatPlace(place, place.id, place.name, place.address)
+
+        assertEquals("https://tour.example/image.jpg", response["imageUrl"])
+        assertEquals("tourapi", response["imageSource"])
+        assertEquals("http://localhost:8080/api/places/${place.id}/photo", response["fallbackImageUrl"])
+        assertEquals("google_places", response["fallbackImageSource"])
     }
 
     @Test
