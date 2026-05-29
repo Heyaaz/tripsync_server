@@ -175,6 +175,8 @@ class ScheduleResponseMapper(
         return mapOf(
             "imageUrl" to image.url,
             "imageSource" to image.source,
+            "fallbackImageUrl" to image.fallbackUrl,
+            "fallbackImageSource" to image.fallbackSource,
             "isRegionalBenefit" to isRegionalBenefit(place?.metadataTags, metric),
             "popularity" to formatPopularity(metric, place?.metadataTags),
         )
@@ -188,10 +190,13 @@ class ScheduleResponseMapper(
 
     private fun formatImage(place: Place?, metric: ExternalPopularityMetric?, placeId: Long): PlaceImage {
         val tourApiImage = place?.imageUrl?.trim()?.takeIf { it.isNotBlank() }
-        if (tourApiImage != null) return PlaceImage(tourApiImage, "tourapi")
         val hasGooglePhoto = metric?.googlePhotoReference?.isNotBlank() == true
-        return if (hasGooglePhoto) {
-            PlaceImage("${apiBaseUrl.trimEnd('/')}/places/$placeId/photo", "google_places")
+        val googleImage = if (hasGooglePhoto) "${apiBaseUrl.trimEnd('/')}/places/$placeId/photo" else null
+
+        return if (tourApiImage != null) {
+            PlaceImage(tourApiImage, "tourapi", googleImage, if (googleImage != null) "google_places" else null)
+        } else if (googleImage != null) {
+            PlaceImage(googleImage, "google_places")
         } else {
             PlaceImage(null, null)
         }
@@ -215,6 +220,11 @@ class ScheduleResponseMapper(
             "role" to role,
             "label" to label,
             "hasExternalSignal" to (score != null),
+            "normalizedPopularityScore" to score,
+            "naverSearchTrendScore" to metric?.naverSearchTrendScore,
+            "googleRating" to metric?.googleRating?.toDouble(),
+            "googleUserRatingCount" to metric?.googleUserRatingCount,
+            "sourceUpdatedAt" to metric?.updatedAt?.toString(),
         )
     }
 
@@ -231,5 +241,7 @@ class ScheduleResponseMapper(
     private data class PlaceImage(
         val url: String?,
         val source: String?,
+        val fallbackUrl: String? = null,
+        val fallbackSource: String? = null,
     )
 }

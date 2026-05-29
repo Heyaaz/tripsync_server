@@ -84,7 +84,7 @@ class PersonaValidationService(
                 (slotScores.average() * 100).toInt().coerceIn(0, 100)
             }
 
-            val positiveSignals = buildPositiveSignals(option, members)
+            val positiveSignals = buildPositiveSignals(option, acceptanceScore)
             val objections = buildObjections(option, members)
             val persuasions = buildPersuasionPoints(option)
 
@@ -107,10 +107,27 @@ class PersonaValidationService(
         }
     }
 
-    private fun buildPositiveSignals(option: ScheduleOptionForValidation, members: List<MemberSnapshot>): List<String> {
+    private fun buildPositiveSignals(option: ScheduleOptionForValidation, acceptanceScore: Int): List<String> {
+        val commonSlotCount = option.slots.count { it.slotType == SlotType.COMMON }
+        val leadingAxes = option.slots
+            .flatMap { slot -> slot.scores.leadingAxisLabels() }
+            .groupingBy { it }
+            .eachCount()
+            .entries
+            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+            .map { it.key }
+            .take(2)
+
+        val preferenceSummary = when (leadingAxes.size) {
+            0 -> "무리 없는 일정 밀도와 균형 잡힌 장소 구성이 좋게 평가됩니다."
+            1 -> "${leadingAxes[0]} 성향의 여행자에게 일정 구성이 잘 맞습니다."
+            else -> "${leadingAxes.joinToString("·")} 성향의 여행자에게 일정 구성이 잘 맞습니다."
+        }
+
         return listOf(
-            "${members.size}명의 취향이 ${option.slots.count { it.slotType == SlotType.COMMON }}개 공통 슬롯에서 조화를 이룹니다.",
-            "그룹 만족도 ${option.groupSatisfaction}점으로 안정적인 선택입니다.",
+            preferenceSummary,
+            "${commonSlotCount}개 공통 코스로 동행자와 함께 움직이기 쉽습니다.",
+            "참고군 기준 수용도가 ${acceptanceScore}점으로 안정적입니다.",
         )
     }
 
@@ -123,8 +140,34 @@ class PersonaValidationService(
     }
 
     private fun buildPersuasionPoints(option: ScheduleOptionForValidation): List<String> {
-        return option.slots.filter { it.slotType == SlotType.PERSONAL }.map { slot ->
-            slot.reasonText.trim().trimEnd('.', '!', '?', '。')
-        }.distinct()
+        return option.slots
+            .filter { it.slotType == SlotType.PERSONAL }
+            .mapNotNull { slot -> slot.reasonText.toPersonaFriendlyReason() }
+            .distinct()
+    }
+
+    private fun AxisScores.leadingAxisLabels(): List<String> {
+        return listOf(
+            mobility to "이동을 즐기는",
+            photo to "사진 기록을 중시하는",
+            budget to "예산 효율을 보는",
+            theme to "테마 경험을 선호하는",
+        )
+            .filter { (score, _) -> score >= 60 }
+            .sortedByDescending { (score, _) -> score }
+            .map { (_, label) -> label }
+            .take(2)
+    }
+
+    private fun String.toPersonaFriendlyReason(): String? {
+        val cleaned = trim().trimEnd('.', '!', '?', '。').takeIf { it.isNotBlank() } ?: return null
+        return when {
+            cleaned.contains("사진") || cleaned.contains("기록") -> "사진을 남기기 좋은 장소가 포함되어 기록형 여행자에게 매력적입니다."
+            cleaned.contains("예산") -> "부담 없는 비용 흐름이라 실속형 여행자도 수용하기 좋습니다."
+            cleaned.contains("테마") -> "여행 테마가 분명해 취향이 비슷한 참고군에게 설득력이 있습니다."
+            cleaned.contains("이동") || cleaned.contains("활동성") -> "이동 부담을 고려한 구성이라 활동형 여행자도 따라가기 쉽습니다."
+            cleaned.contains("취향 반영") -> null
+            else -> cleaned
+        }
     }
 }
