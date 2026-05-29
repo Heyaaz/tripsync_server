@@ -68,6 +68,43 @@ class AuthContractTests(
     }
 
     @Test
+    fun `duplicate register returns conflict instead of success false payload`() {
+        val email = "duplicate-${System.nanoTime()}@example.com"
+
+        mockMvc.post("/auth/register") {
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"email":"$email","password":"password123","nickname":"중복"}"""
+        }.andExpect {
+            status { isCreated() }
+            jsonPath("$.success") { value(true) }
+        }
+
+        mockMvc.post("/auth/register") {
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"email":"$email","password":"password123","nickname":"중복"}"""
+        }.andExpect {
+            status { isConflict() }
+            jsonPath("$.success") { value(false) }
+            jsonPath("$.error.message") { value("이미 사용 중인 이메일입니다.") }
+        }
+    }
+
+    @Test
+    fun `invalid local login returns unauthorized instead of success false payload`() {
+        val email = "login-fail-${System.nanoTime()}@example.com"
+        registerSession(email, "로그인실패")
+
+        mockMvc.post("/auth/login") {
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"email":"$email","password":"wrong-password"}"""
+        }.andExpect {
+            status { isUnauthorized() }
+            jsonPath("$.success") { value(false) }
+            jsonPath("$.error.message") { value("이메일 또는 비밀번호가 올바르지 않습니다.") }
+        }
+    }
+
+    @Test
     fun `cookie session authenticates me and tpti submit then public share`() {
         val guest = mockMvc.post("/auth/guest") {
             contentType = MediaType.APPLICATION_JSON
