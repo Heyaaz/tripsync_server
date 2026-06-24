@@ -16,6 +16,7 @@ import com.tripsync.web.dto.LoginDto
 import com.tripsync.web.dto.RegisterDto
 import jakarta.servlet.http.HttpServletResponse
 import jakarta.validation.Valid
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseCookie
@@ -31,6 +32,7 @@ class AuthController(
     private val passwordEncoder: PasswordEncoder,
     private val guestSessionService: GuestSessionService,
     private val oAuthSessionService: OAuthSessionService,
+    @Value("\${security.cookie.secure:false}") private val secureCookies: Boolean,
 ) {
 
     @PostMapping("/register")
@@ -159,7 +161,7 @@ class AuthController(
     private fun sessionCookie(token: String): ResponseCookie = ResponseCookie
         .from(JwtAuthenticationFilter.SESSION_COOKIE_NAME, token)
         .httpOnly(true)
-        .secure(false)
+        .secure(secureCookies)
         .sameSite("Lax")
         .path("/")
         .maxAge(Duration.ofDays(7))
@@ -168,7 +170,7 @@ class AuthController(
     private fun expiredSessionCookie(): ResponseCookie = ResponseCookie
         .from(JwtAuthenticationFilter.SESSION_COOKIE_NAME, "")
         .httpOnly(true)
-        .secure(false)
+        .secure(secureCookies)
         .sameSite("Lax")
         .path("/")
         .maxAge(Duration.ZERO)
@@ -177,7 +179,7 @@ class AuthController(
     private fun oauthStateCookie(state: String): ResponseCookie = ResponseCookie
         .from(OAUTH_STATE_COOKIE_NAME, state)
         .httpOnly(true)
-        .secure(false)
+        .secure(secureCookies)
         .sameSite("Lax")
         .path("/")
         .maxAge(Duration.ofMinutes(10))
@@ -186,7 +188,7 @@ class AuthController(
     private fun expiredOAuthStateCookie(): ResponseCookie = ResponseCookie
         .from(OAUTH_STATE_COOKIE_NAME, "")
         .httpOnly(true)
-        .secure(false)
+        .secure(secureCookies)
         .sameSite("Lax")
         .path("/")
         .maxAge(Duration.ZERO)

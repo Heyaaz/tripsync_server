@@ -61,8 +61,12 @@ logging:
     org.hibernate.type.descriptor.sql.BasicBinder: TRACE
 
 jwt:
-  secret: ${JWT_SECRET:your-256-bit-secret-key-here-for-development-only}
+  secret: "${JWT_SECRET:}"
   expiration: 604800000
+
+security:
+  cookie:
+    secure: "${COOKIE_SECURE:true}"
 
 openai:
   api-key: ${OPENAI_API_KEY:}
@@ -141,3 +145,9 @@ spring:
       ddl-auto: create-drop
   flyway:
     enabled: false
+
+jwt:
+  secret: test-development-secret-key-256-bits-min
+
+oauth:
+  dev-fallback-enabled: true
