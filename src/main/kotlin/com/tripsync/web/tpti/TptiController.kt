@@ -30,8 +30,8 @@ class TptiController(
         return tptiService.getLatestResult(userId, user)
     }
 
-    @GetMapping("/share/tpti/{resultId}")
-    fun getShareResult(@PathVariable resultId: Long): ApiResponse<Map<String, Any>> {
-        return tptiService.getPublicShareResult(resultId)
+    @GetMapping("/share/tpti/{shareToken}")
+    fun getShareResult(@PathVariable shareToken: String): ApiResponse<Map<String, Any>> {
+        return tptiService.getPublicShareResult(shareToken)
     }
 }

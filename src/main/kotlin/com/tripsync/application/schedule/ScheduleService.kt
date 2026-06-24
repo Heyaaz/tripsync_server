@@ -209,6 +209,7 @@ class ScheduleService(
         return ApiResponse.ok(
             mapOf(
                 "scheduleId" to target.id,
+                "shareToken" to target.shareToken,
                 "roomId" to roomId,
                 "optionType" to target.optionType.name.lowercase(),
                 "status" to "confirmed",
@@ -244,8 +245,9 @@ class ScheduleService(
     }
 
     @Transactional(readOnly = true)
-    fun getPublicShareSchedule(scheduleId: Long): ApiResponse<Map<String, Any?>> {
-        val schedule = accessPolicy.getActiveSchedule(scheduleId)
+    fun getPublicShareSchedule(shareToken: String): ApiResponse<Map<String, Any?>> {
+        val schedule = scheduleRepository.findByShareTokenAndDelYn(shareToken, YnFlag.N)
+            ?: throw DomainException(HttpStatus.NOT_FOUND, "SCHEDULE_NOT_FOUND", "공유 일정을 찾을 수 없습니다.")
         return ApiResponse.ok(responseMapper.formatPublicShareSchedule(schedule))
     }
 

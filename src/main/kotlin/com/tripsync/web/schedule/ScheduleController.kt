@@ -101,8 +101,8 @@ class ScheduleController(
         return scheduleService.regenerateSchedule(scheduleId, user.id, dto)
     }
 
-    @GetMapping("/share/schedules/{scheduleId}")
-    fun getPublicShareSchedule(@PathVariable scheduleId: Long): ApiResponse<Map<String, Any?>> {
-        return scheduleService.getPublicShareSchedule(scheduleId)
+    @GetMapping("/share/schedules/{shareToken}")
+    fun getPublicShareSchedule(@PathVariable shareToken: String): ApiResponse<Map<String, Any?>> {
+        return scheduleService.getPublicShareSchedule(shareToken)
     }
 }

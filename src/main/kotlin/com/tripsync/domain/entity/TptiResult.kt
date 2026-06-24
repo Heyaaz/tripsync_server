@@ -1,5 +1,6 @@
 package com.tripsync.domain.entity
 
+import com.tripsync.common.security.ShareTokenGenerator
 import jakarta.persistence.*
 import org.hibernate.annotations.JdbcTypeCode
 import org.hibernate.type.SqlTypes
@@ -36,4 +37,7 @@ class TptiResult(
 
     @Column(name = "is_manually_adjusted", nullable = false)
     var isManuallyAdjusted: Boolean = false,
+
+    @Column(name = "share_token", nullable = false, unique = true, length = 64)
+    var shareToken: String = ShareTokenGenerator.generate(),
 ) : BaseEntity()

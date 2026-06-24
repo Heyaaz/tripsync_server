@@ -8,4 +8,5 @@ import org.springframework.stereotype.Repository
 @Repository
 interface TptiResultRepository : JpaRepository<TptiResult, Long> {
     fun findTopByUserIdAndDelYnOrderByCreatedAtDesc(userId: Long, delYn: YnFlag): TptiResult?
+    fun findByShareTokenAndDelYn(shareToken: String, delYn: YnFlag): TptiResult?
 }

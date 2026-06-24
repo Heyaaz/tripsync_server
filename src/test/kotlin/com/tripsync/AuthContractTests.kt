@@ -127,13 +127,11 @@ class AuthContractTests(
             jsonPath("$.data.resultId") { value(notNullValue()) }
         }.andReturn().response.contentAsString
 
-        val resultId = Regex("\\\"result_id\\\":(\\d+)|\\\"resultId\\\":(\\d+)")
+        val shareToken = Regex("\\\"shareToken\\\":\\\"([^\\\"]+)\\\"")
             .find(submit)!!
-            .groupValues
-            .drop(1)
-            .first { it.isNotBlank() }
+            .groupValues[1]
 
-        mockMvc.get("/share/tpti/$resultId")
+        mockMvc.get("/share/tpti/$shareToken")
             .andExpect {
                 status { isOk() }
                 jsonPath("$.data.nickname") { value("테스터") }

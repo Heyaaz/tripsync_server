@@ -71,6 +71,7 @@ class ScheduleResponseMapper(
         val metricsByPlaceId = loadMetricsByPlaceId(activeSlots.map { it.place.id })
         return mapOf(
             "id" to schedule.id,
+            "shareToken" to schedule.shareToken,
             "roomId" to schedule.room.id,
             "destination" to schedule.room.destination,
             "tripDate" to schedule.room.tripStartDate.toString(),
@@ -122,6 +123,7 @@ class ScheduleResponseMapper(
     fun formatPublicShareSchedule(schedule: Schedule): Map<String, Any?> {
         val publicKeys = setOf(
             "id",
+            "shareToken",
             "roomId",
             "destination",
             "tripDate",
