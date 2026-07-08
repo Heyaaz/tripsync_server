@@ -8,9 +8,7 @@ import com.tripsync.domain.entity.User
 import com.tripsync.domain.enums.AuthProvider
 import com.tripsync.domain.enums.ScheduleOptionType
 import com.tripsync.domain.enums.TripRoomStatus
-import com.tripsync.domain.enums.YnFlag
 import com.tripsync.domain.repository.ExternalPopularityMetricRepository
-import com.tripsync.domain.repository.RoomMemberProfileRepository
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -22,16 +20,14 @@ import java.time.Instant
 import java.time.LocalDate
 
 class ScheduleResponseMapperTest {
-    private val roomMemberProfileRepository = mock(RoomMemberProfileRepository::class.java)
     private val externalPopularityMetricRepository = mock(ExternalPopularityMetricRepository::class.java)
-    private val mapper = ScheduleResponseMapper(roomMemberProfileRepository, externalPopularityMetricRepository, "http://localhost:8080/api")
+    private val mapper = ScheduleResponseMapper(externalPopularityMetricRepository, "http://localhost:8080/api")
 
     @Test
     fun `stored schedule response includes persisted llm metadata`() {
         val schedule = scheduleWithLlmMetadata()
-        `when`(roomMemberProfileRepository.findAllByRoomIdAndDelYn(schedule.room.id, YnFlag.N)).thenReturn(emptyList())
 
-        val response = mapper.formatStoredSchedule(schedule)
+        val response = mapper.formatStoredSchedule(schedule, emptyMap(), emptyList(), emptyList())
 
         assertEquals("deterministic-consensus", response["llmProvider"])
         assertEquals("openai/gpt-4o-mini", response["llmAttemptedProvider"])
@@ -43,9 +39,8 @@ class ScheduleResponseMapperTest {
     @Test
     fun `public share response omits llm operational metadata`() {
         val schedule = scheduleWithLlmMetadata()
-        `when`(roomMemberProfileRepository.findAllByRoomIdAndDelYn(schedule.room.id, YnFlag.N)).thenReturn(emptyList())
 
-        val response = mapper.formatPublicShareSchedule(schedule)
+        val response = mapper.formatPublicShareSchedule(schedule, emptyMap(), emptyList(), emptyList())
 
         assertFalse(response.containsKey("llmProvider"))
         assertFalse(response.containsKey("llmAttemptedProvider"))

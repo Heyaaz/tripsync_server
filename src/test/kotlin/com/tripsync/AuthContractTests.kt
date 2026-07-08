@@ -345,6 +345,21 @@ class AuthContractTests(
     }
 
     @Test
+    fun `malformed json returns bad request api response`() {
+        val hostSession = registerSession("malformed-${System.nanoTime()}@example.com", "형식오류")
+
+        mockMvc.post("/rooms") {
+            cookie(hostSession)
+            contentType = MediaType.APPLICATION_JSON
+            content = """{"destination":"충청남도","tripDate":"""
+        }.andExpect {
+            status { isBadRequest() }
+            jsonPath("$.success") { value(false) }
+            jsonPath("$.error.code") { value("INVALID_REQUEST") }
+        }
+    }
+
+    @Test
     fun `oauth start sets state cookie and local callback creates session`() {
         assertOAuthRedirectPath("/rooms/new", "http://localhost:3001/rooms/new?login=success&provider=google")
     }

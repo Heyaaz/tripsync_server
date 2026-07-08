@@ -12,7 +12,14 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.mockito.ArgumentCaptor
+import org.mockito.Mockito.`when`
+import org.mockito.Mockito.anyList
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.verify
+import org.springframework.transaction.TransactionDefinition
+import org.springframework.transaction.support.AbstractPlatformTransactionManager
+import org.springframework.transaction.support.DefaultTransactionStatus
 import org.springframework.web.reactive.function.client.WebClient
 import java.math.BigDecimal
 
@@ -113,8 +120,74 @@ class TourApiBatchServiceTest {
         assertTrue(existing.metadataTags?.get("lastSyncedAt") != "2026-01-01T00:00:00Z")
     }
 
-    private fun service(): TourApiBatchService {
+    @Test
+    fun `enrichment candidate loader keeps paging until it finds stale candidates`() {
         val placeRepository = mock(PlaceRepository::class.java)
+        val service = service(placeRepository)
+        val currentRows = listOf(
+            place(
+                id = 1,
+                tourApiId = "current-1",
+                metadataTags = currentDetailMetadata(),
+            ),
+            place(
+                id = 2,
+                tourApiId = "current-2",
+                metadataTags = currentDetailMetadata(),
+            ),
+            place(
+                id = 3,
+                tourApiId = "current-3",
+                metadataTags = currentDetailMetadata(),
+            ),
+        )
+        val stale = place(
+            id = 4,
+            tourApiId = "stale-1",
+            metadataTags = mapOf(
+                "contentTypeId" to "12",
+                "detailEnrichedAt" to "2026-01-01T00:00:00Z",
+                "sourceModifiedTime" to "20260102000000",
+            ),
+        )
+        `when`(placeRepository.findDetailEnrichmentCandidatesAfterId(0L, 3)).thenReturn(currentRows)
+        `when`(placeRepository.findDetailEnrichmentCandidatesAfterId(3L, 3)).thenReturn(listOf(stale))
+
+        val candidates = invokeLoadEnrichmentCandidates(service, limit = 1)
+
+        assertEquals(1, candidates.size)
+        assertEquals("stale-1", candidateField(candidates.first(), "tourApiId"))
+        verify(placeRepository).findDetailEnrichmentCandidatesAfterId(3L, 3)
+    }
+
+    @Test
+    fun `sync chunk deduplicates repeated tour api ids before save all`() {
+        val placeRepository = mock(PlaceRepository::class.java)
+        val service = service(placeRepository)
+        val first = place(
+            tourApiId = "dup-1",
+            name = "중복 장소 1",
+            metadataTags = mapOf("sourceModifiedTime" to "20260101000000"),
+        )
+        val second = place(
+            tourApiId = "dup-1",
+            name = "중복 장소 2",
+            metadataTags = mapOf("sourceModifiedTime" to "20260102000000"),
+        )
+        `when`(placeRepository.findByTourApiIdIn(listOf("dup-1"))).thenReturn(emptyList())
+        `when`(placeRepository.saveAll(anyList<Place>())).thenAnswer { invocation -> invocation.arguments[0] }
+
+        val counts = invokeUpsertPlacesChunk(service, "12", listOf(first, second))
+
+        assertEquals(1, countField(counts, "created"))
+        @Suppress("UNCHECKED_CAST")
+        val savedCaptor = ArgumentCaptor.forClass(List::class.java) as ArgumentCaptor<List<Place>>
+        verify(placeRepository).saveAll(savedCaptor.capture())
+        assertEquals(1, savedCaptor.value.size)
+        assertEquals("중복 장소 2", savedCaptor.value.first().name)
+    }
+
+    private fun service(placeRepository: PlaceRepository = mock(PlaceRepository::class.java)): TourApiBatchService {
         val client = TourApiClient(
             webClient = WebClient.create(),
             objectMapper = ObjectMapper(),
@@ -133,7 +206,40 @@ class TourApiBatchServiceTest {
                 retryMaxAttempts = 1,
                 requestIntervalMillis = 0,
             ),
+            transactionManager = NoopTransactionManager(),
         )
+    }
+
+    private fun invokeLoadEnrichmentCandidates(service: TourApiBatchService, limit: Int): List<Any> {
+        val method = TourApiBatchService::class.java.getDeclaredMethod(
+            "loadEnrichmentCandidates",
+            Int::class.javaPrimitiveType,
+        )
+        method.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        return method.invoke(service, limit) as List<Any>
+    }
+
+    private fun candidateField(candidate: Any, fieldName: String): Any? {
+        val field = candidate.javaClass.getDeclaredField(fieldName)
+        field.isAccessible = true
+        return field.get(candidate)
+    }
+
+    private fun invokeUpsertPlacesChunk(service: TourApiBatchService, contentTypeId: String, incomingPlaces: List<Place>): Any {
+        val method = TourApiBatchService::class.java.getDeclaredMethod(
+            "upsertPlacesChunk",
+            String::class.java,
+            List::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(service, contentTypeId, incomingPlaces)
+    }
+
+    private fun countField(counts: Any, fieldName: String): Any? {
+        val field = counts.javaClass.getDeclaredField(fieldName)
+        field.isAccessible = true
+        return field.get(counts)
     }
 
     private fun invokeMergePlace(
@@ -152,8 +258,20 @@ class TourApiBatchServiceTest {
         return method.invoke(service, existing, incoming, contentTypeId) as Boolean
     }
 
-    private fun place(tourApiId: String, name: String, metadataTags: Map<String, Any>): Place {
+    private fun currentDetailMetadata(): Map<String, Any> = mapOf(
+        "contentTypeId" to "12",
+        "detailEnrichedAt" to "2026-01-02T00:00:00Z",
+        "sourceModifiedTime" to "20260101000000",
+    )
+
+    private fun place(
+        tourApiId: String,
+        name: String = "테스트 장소",
+        metadataTags: Map<String, Any>,
+        id: Long = 0,
+    ): Place {
         return Place(
+            id = id,
             tourApiId = tourApiId,
             name = name,
             address = "충청남도 테스트군",
@@ -169,4 +287,10 @@ class TourApiBatchServiceTest {
         )
     }
 
+    private class NoopTransactionManager : AbstractPlatformTransactionManager() {
+        override fun doGetTransaction(): Any = Any()
+        override fun doBegin(transaction: Any, definition: TransactionDefinition) = Unit
+        override fun doCommit(status: DefaultTransactionStatus) = Unit
+        override fun doRollback(status: DefaultTransactionStatus) = Unit
+    }
 }

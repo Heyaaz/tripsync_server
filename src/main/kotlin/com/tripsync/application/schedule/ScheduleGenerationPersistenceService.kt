@@ -105,7 +105,7 @@ class ScheduleGenerationPersistenceService(
     ): SavedScheduleGeneration {
         val room = tripRoomRepository.findActiveByIdForUpdate(roomId, YnFlag.N)
             ?: throw DomainException(HttpStatus.NOT_FOUND, "ROOM_NOT_FOUND", "존재하지 않는 방입니다.")
-        val version = (scheduleRepository.findTopByRoomIdAndDelYnOrderByVersionDesc(room.id, YnFlag.N)?.version ?: 0) + 1
+        val version = (scheduleRepository.findTopByRoomIdAndDelYnOrderByVersionDescIdDesc(room.id, YnFlag.N)?.version ?: 0) + 1
         val replacementCandidates = placeQueryRepository.findScheduleCandidates(dto.destination)
         val saved = options.map { rawOption ->
             val option = rawOption.copy(slots = ensureUniqueSlots(rawOption.slots, replacementCandidates))

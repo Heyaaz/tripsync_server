@@ -1,22 +1,31 @@
 package com.tripsync.application.room
 
-import com.tripsync.application.schedule.ScheduleResponseMapper
+import com.tripsync.application.schedule.ScheduleReadAssembler
 import com.tripsync.common.dto.ApiResponse
 import com.tripsync.common.exception.DomainException
 import com.tripsync.domain.entity.RoomMember
 import com.tripsync.domain.entity.RoomMemberProfile
+import com.tripsync.domain.entity.Schedule
 import com.tripsync.domain.entity.TripRoom
 import com.tripsync.domain.entity.User
 import com.tripsync.domain.enums.RoomMemberRole
 import com.tripsync.domain.enums.TripRoomStatus
 import com.tripsync.domain.enums.YnFlag
-import com.tripsync.domain.repository.*
+import com.tripsync.domain.repository.ConflictMapRepository
+import com.tripsync.domain.repository.RoomMemberProfileRepository
+import com.tripsync.domain.repository.RoomMemberRepository
+import com.tripsync.domain.repository.SatisfactionScoreRepository
+import com.tripsync.domain.repository.ScheduleRepository
+import com.tripsync.domain.repository.ScheduleSlotRepository
+import com.tripsync.domain.repository.TptiResultRepository
+import com.tripsync.domain.repository.TripPhotoRepository
+import com.tripsync.domain.repository.TripRoomRepository
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Instant
 import java.time.LocalDate
-import java.util.*
+import java.util.UUID
 
 @Service
 class RoomService(
@@ -29,7 +38,7 @@ class RoomService(
     private val satisfactionScoreRepository: SatisfactionScoreRepository,
     private val conflictMapRepository: ConflictMapRepository,
     private val tripPhotoRepository: TripPhotoRepository,
-    private val scheduleResponseMapper: ScheduleResponseMapper,
+    private val scheduleReadAssembler: ScheduleReadAssembler,
 ) {
 
     @Transactional
@@ -92,9 +101,10 @@ class RoomService(
     fun getRoom(roomId: Long, user: User): ApiResponse<Map<String, Any?>> {
         val room = getActiveRoom(roomId)
         validateRoomMember(room.id, user.id)
-        val memberCount = roomMemberRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N).size
+        val memberCount = roomMemberRepository.countByRoomIdAndDelYn(room.id, YnFlag.N)
+        val scheduleSummary = loadScheduleSummaries(listOf(room.id))[room.id] ?: ScheduleSummary.empty()
 
-        return ApiResponse.ok(roomSummary(room, memberCount, includeScheduleState = true))
+        return ApiResponse.ok(roomSummary(room, memberCount, scheduleSummary, includeScheduleState = true))
     }
 
     @Transactional(readOnly = true)
@@ -103,15 +113,22 @@ class RoomService(
             throw DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "로그인한 계정으로만 내 여행 계획을 확인할 수 있습니다.")
         }
 
-        val rooms = roomMemberRepository.findAllByUserIdAndDelYn(user.id, YnFlag.N)
+        val activeRooms = roomMemberRepository.findAllByUserIdAndDelYn(user.id, YnFlag.N)
             .map { it.room }
             .filter { it.delYn == YnFlag.N }
             .distinctBy { it.id }
             .sortedWith(compareByDescending<TripRoom> { it.createdAt }.thenByDescending { it.id })
-            .map { room ->
-                val memberCount = roomMemberRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N).size
-                roomSummary(room, memberCount, includeScheduleState = false)
-            }
+        val roomIds = activeRooms.map { it.id }
+        val memberCounts = loadMemberCounts(roomIds)
+        val scheduleSummaries = loadScheduleSummaries(roomIds)
+        val rooms = activeRooms.map { room ->
+            roomSummary(
+                room = room,
+                memberCount = memberCounts[room.id] ?: 0L,
+                scheduleSummary = scheduleSummaries[room.id] ?: ScheduleSummary.empty(),
+                includeScheduleState = false,
+            )
+        }
 
         return ApiResponse.ok(mapOf("rooms" to rooms))
     }
@@ -120,9 +137,10 @@ class RoomService(
     fun getShareRoom(shareCode: String): ApiResponse<Map<String, Any?>> {
         val room = tripRoomRepository.findByShareCodeAndDelYn(shareCode, YnFlag.N)
             ?: throw DomainException(HttpStatus.NOT_FOUND, "INVALID_SHARE_CODE", "유효하지 않은 공유 코드입니다.")
-        val memberCount = roomMemberRepository.findAllByRoomIdAndDelYn(room.id, YnFlag.N).size
+        val memberCount = roomMemberRepository.countByRoomIdAndDelYn(room.id, YnFlag.N)
+        val scheduleSummary = loadScheduleSummaries(listOf(room.id))[room.id] ?: ScheduleSummary.empty()
         return ApiResponse.ok(
-            roomSummary(room, memberCount, includeScheduleState = false) + mapOf("hostNickname" to room.hostUser.nickname)
+            roomSummary(room, memberCount, scheduleSummary, includeScheduleState = false) + mapOf("hostNickname" to room.hostUser.nickname)
         )
     }
 
@@ -247,7 +265,6 @@ class RoomService(
         return ApiResponse.ok(mapOf("roomId" to room.id, "deleted" to false, "left" to true))
     }
 
-
     private fun upsertMemberProfile(room: TripRoom, user: User, result: com.tripsync.domain.entity.TptiResult): RoomMemberProfile {
         val profile = roomMemberProfileRepository.findByRoomIdAndUserId(room.id, user.id)
         if (profile == null) {
@@ -276,7 +293,7 @@ class RoomService(
     }
 
     private fun refreshRoomStatus(roomId: Long): TripRoomStatus {
-        val profileCount = roomMemberProfileRepository.findAllByRoomIdAndDelYn(roomId, YnFlag.N).size
+        val profileCount = roomMemberProfileRepository.countByRoomIdAndDelYn(roomId, YnFlag.N)
         val room = getActiveRoom(roomId)
         val next = if (profileCount >= 2) TripRoomStatus.READY else TripRoomStatus.WAITING
         room.status = next
@@ -298,12 +315,12 @@ class RoomService(
         }
     }
 
-    private fun roomSummary(room: TripRoom, memberCount: Int, includeScheduleState: Boolean): Map<String, Any?> {
-        val schedules = scheduleRepository.findByRoomIdAndDelYn(room.id, YnFlag.N)
-        val confirmed = schedules
-            .filter { it.isConfirmed }
-            .maxWithOrNull(compareBy<com.tripsync.domain.entity.Schedule> { it.version }.thenBy { it.id })
-        val latestVersion = schedules.maxOfOrNull { it.version }
+    private fun roomSummary(
+        room: TripRoom,
+        memberCount: Long,
+        scheduleSummary: ScheduleSummary,
+        includeScheduleState: Boolean,
+    ): Map<String, Any?> {
         val base = mapOf(
             "roomId" to room.id,
             "roomName" to room.roomName,
@@ -316,25 +333,28 @@ class RoomService(
             "hostUserId" to room.hostUser.id,
             "memberCount" to memberCount,
             "createdAt" to room.createdAt.toString(),
-            "hasGeneratedSchedule" to schedules.isNotEmpty(),
-            "confirmedScheduleId" to confirmed?.id,
-            "latestScheduleVersion" to latestVersion,
+            "hasGeneratedSchedule" to scheduleSummary.hasGeneratedSchedule,
+            "confirmedScheduleId" to scheduleSummary.confirmedScheduleId,
+            "latestScheduleVersion" to scheduleSummary.latestScheduleVersion,
         )
         if (!includeScheduleState) return base
 
-        val latestOptions = latestVersion
-            ?.let { version -> schedules.filter { it.version == version }.sortedBy { it.optionType.ordinal } }
+        val confirmed = scheduleSummary.confirmedScheduleId
+            ?.let { scheduleRepository.findByIdAndDelYn(it, YnFlag.N) }
+        val latestOptions = scheduleSummary.latestScheduleVersion
+            ?.let { version -> scheduleRepository.findAllByRoomIdAndDelYnAndVersion(room.id, YnFlag.N, version) }
+            ?.sortedBy { it.optionType.ordinal }
             .orEmpty()
         val scheduleState = when {
             confirmed != null -> mapOf(
                 "status" to "confirmed",
-                "confirmedSchedule" to scheduleResponseMapper.formatStoredSchedule(confirmed),
-                "options" to latestOptions.map { scheduleResponseMapper.formatStoredSchedule(it) },
+                "confirmedSchedule" to formatSchedule(confirmed),
+                "options" to latestOptions.map { formatSchedule(it) },
             )
             latestOptions.isNotEmpty() -> mapOf(
                 "status" to "generated",
                 "confirmedSchedule" to null,
-                "options" to latestOptions.map { scheduleResponseMapper.formatStoredSchedule(it) },
+                "options" to latestOptions.map { formatSchedule(it) },
             )
             else -> mapOf(
                 "status" to "empty",
@@ -344,6 +364,28 @@ class RoomService(
         }
 
         return base + mapOf("scheduleState" to scheduleState)
+    }
+
+    private fun loadMemberCounts(roomIds: Collection<Long>): Map<Long, Long> {
+        if (roomIds.isEmpty()) return emptyMap()
+        return roomMemberRepository.countActiveMembersByRoomIds(roomIds, YnFlag.N)
+            .associate { it.getRoomId() to it.getMemberCount() }
+    }
+
+    private fun loadScheduleSummaries(roomIds: Collection<Long>): Map<Long, ScheduleSummary> {
+        if (roomIds.isEmpty()) return emptyMap()
+        return scheduleRepository.findSummariesByRoomIds(roomIds)
+            .associate {
+                it.getRoomId() to ScheduleSummary(
+                    hasGeneratedSchedule = it.getScheduleCount() > 0,
+                    confirmedScheduleId = it.getConfirmedScheduleId(),
+                    latestScheduleVersion = it.getLatestVersion(),
+                )
+            }
+    }
+
+    private fun formatSchedule(schedule: Schedule): Map<String, Any?> {
+        return scheduleReadAssembler.formatStoredSchedule(schedule)
     }
 
     private fun normalizeRoomName(roomName: String?, destination: String): String {
@@ -362,6 +404,20 @@ class RoomService(
     private fun generateShareCode(): String {
         val suffix = UUID.randomUUID().toString().replace("-", "").take(5).uppercase()
         return "CNAM${LocalDate.now().year.toString().takeLast(2)}$suffix"
+    }
+
+    private data class ScheduleSummary(
+        val hasGeneratedSchedule: Boolean,
+        val confirmedScheduleId: Long?,
+        val latestScheduleVersion: Int?,
+    ) {
+        companion object {
+            fun empty() = ScheduleSummary(
+                hasGeneratedSchedule = false,
+                confirmedScheduleId = null,
+                latestScheduleVersion = null,
+            )
+        }
     }
 
     private companion object {
