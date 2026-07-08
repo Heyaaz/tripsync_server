@@ -221,38 +221,40 @@ def generate_vectors(input_path: str, output_path: str, limit: Optional[int] = N
     print(f"Reading dataset from: {input_path}")
 
     try:
+        from datasets import load_dataset
         import pandas as pd
     except ImportError:
-        print("Error: pandas required. pip install pandas pyarrow", file=sys.stderr)
+        print("Error: datasets and pandas required. pip install datasets pandas pyarrow", file=sys.stderr)
         sys.exit(1)
 
-    # Parquet 파일 읽기
-    df = pd.read_parquet(input_path)
-
-    if limit:
-        df = df.head(limit)
-
-    total = len(df)
-    print(f"Total rows: {total}")
+    # HuggingFace에서 스트리밍으로 데이터셋 로드
+    print("Loading dataset from HuggingFace (streaming mode)...")
+    dataset = load_dataset("nvidia/Nemotron-Personas-Korea", split="train", streaming=True)
 
     vectors = {}
     fallback_count = 0
+    total = 0
 
-    for idx, row in df.iterrows():
+    for idx, row in enumerate(dataset):
+        if limit and idx >= limit:
+            break
+
         if idx % 10000 == 0:
-            print(f"Processing... {idx}/{total} ({idx/total*100:.1f}%)")
+            print(f"Processing... {idx}")
 
         uuid = str(row.get("uuid", ""))
         if not uuid:
             continue
 
-        scores = process_persona_row(row.to_dict())
+        scores = process_persona_row(row)
         if scores:
-            # LLM fallback 카운트 (50,50,50,50인 경우)
             if all(v == 50 for v in scores.values()):
                 fallback_count += 1
-
             vectors[uuid] = scores
+
+        total = idx + 1
+
+    print(f"\nTotal rows processed: {total}")
 
     # 통계 출력
     print(f"\nProcessed: {len(vectors)} vectors")
