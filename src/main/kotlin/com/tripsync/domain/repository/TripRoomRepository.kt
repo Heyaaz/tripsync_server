@@ -23,7 +23,7 @@ interface TripRoomRepository : JpaRepository<TripRoom, Long> {
           and room.delYn = :delYn
         """
     )
-    fun findLockedByIdAndDelYn(
+    fun findActiveByIdForUpdate(
         @Param("roomId") roomId: Long,
         @Param("delYn") delYn: YnFlag,
     ): TripRoom?

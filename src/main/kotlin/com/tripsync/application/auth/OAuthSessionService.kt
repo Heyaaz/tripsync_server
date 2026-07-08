@@ -35,6 +35,7 @@ class OAuthSessionService(
     @Value("\${kakao.authorize-url:https://kauth.kakao.com/oauth/authorize}") private val kakaoAuthorizeUrl: String,
     @Value("\${kakao.token-url:https://kauth.kakao.com/oauth/token}") private val kakaoTokenUrl: String,
     @Value("\${kakao.user-info-url:https://kapi.kakao.com/v2/user/me}") private val kakaoUserInfoUrl: String,
+    @Value("\${oauth.dev-fallback-enabled:false}") private val devFallbackEnabled: Boolean,
 ) {
     data class OAuthRedirect(val state: String, val redirectUrl: String)
     data class OAuthResult(val user: User, val redirectUrl: String)
@@ -48,6 +49,7 @@ class OAuthSessionService(
         val clientId = clientId(provider)
 
         if (clientId.isBlank()) {
+            ensureDevOAuthFallbackAllowed(provider)
             return OAuthRedirect(
                 state = state,
                 redirectUrl = "$callbackUrl?code=local-${provider.name.lowercase()}-code&state=${enc(combinedState)}&redirectPath=${enc(normalizedRedirectPath)}",
@@ -91,6 +93,7 @@ class OAuthSessionService(
 
     private fun fetchOAuthProfile(provider: AuthProvider, code: String): OAuthProfile {
         if (clientId(provider).isBlank()) {
+            ensureDevOAuthFallbackAllowed(provider)
             return OAuthProfile(
                 providerUserId = code,
                 nickname = if (provider == AuthProvider.KAKAO) "kakao-host" else "google-host",
@@ -189,6 +192,11 @@ class OAuthSessionService(
     private fun userInfoUrl(provider: AuthProvider) = if (provider == AuthProvider.KAKAO) kakaoUserInfoUrl else googleUserInfoUrl
     private fun clientId(provider: AuthProvider) = if (provider == AuthProvider.KAKAO) kakaoClientId else googleClientId
     private fun clientSecret(provider: AuthProvider) = if (provider == AuthProvider.KAKAO) kakaoClientSecret else googleClientSecret
+    private fun ensureDevOAuthFallbackAllowed(provider: AuthProvider) {
+        if (!devFallbackEnabled) {
+            throw DomainException(HttpStatus.SERVICE_UNAVAILABLE, "OAUTH_NOT_CONFIGURED", "${provider.name.lowercase()} OAuth 설정이 필요합니다.")
+        }
+    }
     private fun enc(value: String) = URLEncoder.encode(value, StandardCharsets.UTF_8)
     private fun query(params: Map<String, String>) = params.entries.joinToString("&") { "${enc(it.key)}=${enc(it.value)}" }
 }

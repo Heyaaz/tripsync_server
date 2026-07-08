@@ -18,8 +18,13 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
+import java.time.temporal.ChronoUnit
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 @Service
 class ConsensusService(
@@ -30,10 +35,12 @@ class ConsensusService(
     companion object {
         private const val DETERMINISTIC_PROVIDER = "deterministic-consensus"
         private val SLOT_TEMPLATES = mapOf(
+            3 to listOf(1, 1, 1),
             5 to listOf(150, 120, 150, 120, 180),
             6 to listOf(120, 120, 120, 120, 120, 120),
             7 to listOf(90, 120, 90, 120, 90, 120, 90),
         )
+        private const val NEARBY_LOCALITY_RADIUS_KM = 45.0
         private val SCORE_AXES = ScoreAxis.entries
     }
 
@@ -80,85 +87,90 @@ class ConsensusService(
             throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "ROOM_NOT_READY", "일정 생성을 위해 최소 2명의 멤버가 필요합니다.")
         }
 
-        val window = parseScheduleWindow(context.tripDate, context.startTime, context.endTime)
+        val windows = parseScheduleWindows(context.tripDate, context.tripEndDate, context.startTime, context.endTime)
         val candidatePlaces = filterPlacesForDestination(context.destination, context.places)
         if (candidatePlaces.isEmpty()) {
             throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "PLACE_CANDIDATE_EMPTY", "목적지에 맞는 일정 생성 후보 장소가 부족합니다.")
         }
 
         val analysis = analyzeGroup(context.members)
-        val slotTemplate = buildSlotTemplate(window, analysis, context.members.size)
+        val slotTemplate = buildSlotTemplates(windows, analysis, context.members.size)
         val baseShapes = buildIndividualSlotShapes(slotTemplate, analysis, context.members)
         val averageVector = getAverageScores(context.members)
+        val optionPlaceScopes = selectOptionPlaceScopes(candidatePlaces, baseShapes.size)
 
-        return coroutineScope {
-            val individualDeferred = async {
-                materializeOption(
-                    optionType = ScheduleOptionType.INDIVIDUAL,
-                    label = "개성형",
-                    summary = "각자의 취향이 살아있는 교대 배분 일정",
-                    targets = baseShapes.map { buildIndividualTarget(it, analysis, context.members, averageVector) },
-                    places = candidatePlaces,
-                    threshold = 60,
-                    preferHiddenGem = false,
-                    members = context.members,
-                    tripDate = context.tripDate,
-                    analysis = analysis,
-                    context = context,
+        val usedPlaceIdsByOrder = mutableMapOf<Int, MutableSet<Long>>()
+        val usedPlaceKeysByOrder = mutableMapOf<Int, MutableSet<String>>()
+        val balanced = prepareOption(
+            optionType = ScheduleOptionType.BALANCED,
+            label = "균형형",
+            summary = "모두가 조금씩 만족하는 안전한 선택",
+            targets = baseShapes.map {
+                TargetVector(
+                    scores = averageVector,
+                    targetUserId = null,
+                    slotType = SlotType.COMMON,
+                    reasonAxis = ReasonAxis.COMMON,
+                    reasonText = "그룹 전원의 평균 취향 반영",
+                    startTime = it.startTime,
+                    endTime = it.endTime,
                 )
-            }
-            val balancedDeferred = async {
-                materializeOption(
-                    optionType = ScheduleOptionType.BALANCED,
-                    label = "균형형",
-                    summary = "모두가 조금씩 만족하는 안전한 선택",
-                    targets = baseShapes.map {
-                        TargetVector(
-                            scores = averageVector,
-                            targetUserId = null,
-                            slotType = SlotType.COMMON,
-                            reasonAxis = ReasonAxis.COMMON,
-                            reasonText = "그룹 전원의 평균 취향 반영",
-                            startTime = it.startTime,
-                            endTime = it.endTime,
-                        )
-                    },
-                    places = candidatePlaces,
-                    threshold = 65,
-                    preferHiddenGem = false,
-                    members = context.members,
-                    tripDate = context.tripDate,
-                    analysis = analysis,
-                    context = context,
-                )
-            }
-            val discoveryDeferred = async {
-                materializeOption(
-                    optionType = ScheduleOptionType.DISCOVERY,
-                    label = "지역 발굴형",
-                    summary = "${destinationLabel(context.destination)} 숨은 명소 중심 탐험 일정",
-                    targets = baseShapes.map { buildIndividualTarget(it, analysis, context.members, averageVector) },
-                    places = candidatePlaces,
-                    threshold = 55,
-                    preferHiddenGem = true,
-                    members = context.members,
-                    tripDate = context.tripDate,
-                    analysis = analysis,
-                    context = context,
-                )
-            }
+            },
+            places = optionPlaceScopes.getValue(ScheduleOptionType.BALANCED),
+            threshold = 65,
+            preferHiddenGem = false,
+            tripDate = context.tripDate,
+            context = context,
+            avoidPlaceIdsByOrder = usedPlaceIdsByOrder,
+            avoidPlaceKeysByOrder = usedPlaceKeysByOrder,
+        ).also { rememberUsedPlacesByOrder(usedPlaceIdsByOrder, usedPlaceKeysByOrder, it.slots) }
 
-            val individual = individualDeferred.await()
-            val balanced = balancedDeferred.await()
-            val discovery = discoveryDeferred.await()
+        val individual = prepareOption(
+            optionType = ScheduleOptionType.INDIVIDUAL,
+            label = "개성형",
+            summary = "각자의 취향이 살아있는 교대 배분 일정",
+            targets = baseShapes.map { buildIndividualTarget(it, analysis, context.members, averageVector) },
+            places = optionPlaceScopes.getValue(ScheduleOptionType.INDIVIDUAL),
+            threshold = 60,
+            preferHiddenGem = false,
+            tripDate = context.tripDate,
+            context = context,
+            avoidPlaceIdsByOrder = usedPlaceIdsByOrder,
+            avoidPlaceKeysByOrder = usedPlaceKeysByOrder,
+        ).also { rememberUsedPlacesByOrder(usedPlaceIdsByOrder, usedPlaceKeysByOrder, it.slots) }
 
-            listOf(balanced, individual, discovery)
+        val discovery = prepareOption(
+            optionType = ScheduleOptionType.DISCOVERY,
+            label = "지역 발굴형",
+            summary = "${destinationLabel(context.destination)} 숨은 명소 중심 탐험 일정",
+            targets = baseShapes.map { buildIndividualTarget(it, analysis, context.members, averageVector) },
+            places = optionPlaceScopes.getValue(ScheduleOptionType.DISCOVERY),
+            threshold = 55,
+            preferHiddenGem = true,
+            tripDate = context.tripDate,
+            context = context,
+            avoidPlaceIdsByOrder = usedPlaceIdsByOrder,
+            avoidPlaceKeysByOrder = usedPlaceKeysByOrder,
+        )
+
+        val preparedOptions = listOf(balanced, individual, discovery)
+        val refinedOptions = coroutineScope {
+            val balancedDeferred = async { refinePreparedOption(balanced, context.members, analysis, context) }
+            val individualDeferred = async { refinePreparedOption(individual, context.members, analysis, context) }
+            val discoveryDeferred = async { refinePreparedOption(discovery, context.members, analysis, context) }
+            listOf(balancedDeferred.await(), individualDeferred.await(), discoveryDeferred.await())
         }
+        return resolveCrossOptionPlaceCollisions(refinedOptions, preparedOptions, context.members)
     }
 
-    private fun parseScheduleWindow(tripDate: String, startTime: String, endTime: String): ScheduleWindow {
-        val date = runCatching { LocalDate.parse(tripDate) }
+    private fun parseScheduleWindows(tripStartDate: String, tripEndDate: String?, startTime: String, endTime: String): List<ScheduleWindow> {
+        val startDate = runCatching { LocalDate.parse(tripStartDate) }
             .getOrElse { throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "tripDate는 yyyy-MM-dd 형식이어야 합니다.") }
+        val endDate = runCatching { LocalDate.parse(tripEndDate ?: tripStartDate) }
+            .getOrElse { throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "tripEndDate는 yyyy-MM-dd 형식이어야 합니다.") }
+        if (endDate.isBefore(startDate)) {
+            throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "tripEndDate는 tripStartDate보다 빠를 수 없습니다.")
+        }
         val start = parseScheduleTime(startTime, "startTime")
         val end = parseScheduleTime(endTime, "endTime")
         val startMinutes = start.hour * 60 + start.minute
@@ -169,7 +181,10 @@ class ConsensusService(
         if (endMinutes - startMinutes < 60) {
             throw DomainException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "일정 생성 시간 범위는 최소 1시간 이상이어야 합니다.")
         }
-        return ScheduleWindow(date, startMinutes, endMinutes)
+        val dayCount = ChronoUnit.DAYS.between(startDate, endDate).toInt() + 1
+        return (0 until dayCount).map { offset ->
+            ScheduleWindow(startDate.plusDays(offset.toLong()), startMinutes, endMinutes)
+        }
     }
 
     private fun parseScheduleTime(value: String, fieldName: String): LocalTime {
@@ -225,6 +240,95 @@ class ConsensusService(
         return value.lowercase().replace(Regex("\\s+"), "")
     }
 
+    private fun selectOptionPlaceScopes(
+        places: List<PlaceCandidate>,
+        targetSlotCount: Int,
+    ): Map<ScheduleOptionType, List<PlaceCandidate>> {
+        val grouped = places.groupBy { extractPrimaryLocality(it.address) }
+            .filterKeys { it != null }
+            .mapKeys { it.key!! }
+        if (grouped.isEmpty()) {
+            return mapOf(
+                ScheduleOptionType.BALANCED to places,
+                ScheduleOptionType.INDIVIDUAL to places,
+                ScheduleOptionType.DISCOVERY to places,
+            )
+        }
+
+        val minimumUsefulSize = minOf(targetSlotCount, 5)
+        val candidates = grouped.filterValues { it.size >= minimumUsefulSize }.ifEmpty { grouped }
+
+        val balancedLocality = pickLocality(candidates, ScheduleOptionType.BALANCED, targetSlotCount, emptySet())
+        val individualLocality = pickLocality(candidates, ScheduleOptionType.INDIVIDUAL, targetSlotCount, setOfNotNull(balancedLocality))
+            ?: balancedLocality
+        val discoveryLocality = pickLocality(
+            candidates,
+            ScheduleOptionType.DISCOVERY,
+            targetSlotCount,
+            setOfNotNull(balancedLocality, individualLocality),
+        ) ?: pickLocality(candidates, ScheduleOptionType.DISCOVERY, targetSlotCount, setOfNotNull(balancedLocality)) ?: balancedLocality
+
+        return mapOf(
+            ScheduleOptionType.BALANCED to scopedPlacesForLocality(places, grouped, balancedLocality, targetSlotCount),
+            ScheduleOptionType.INDIVIDUAL to scopedPlacesForLocality(places, grouped, individualLocality, targetSlotCount),
+            ScheduleOptionType.DISCOVERY to scopedPlacesForLocality(places, grouped, discoveryLocality, targetSlotCount),
+        )
+    }
+
+    private fun pickLocality(
+        candidates: Map<String, List<PlaceCandidate>>,
+        optionType: ScheduleOptionType,
+        targetSlotCount: Int,
+        excludedLocalities: Set<String>,
+    ): String? {
+        return candidates
+            .filterKeys { it !in excludedLocalities }
+            .maxByOrNull { (_, group) -> localityScore(group, optionType, targetSlotCount) }
+            ?.key
+    }
+
+    private fun scopedPlacesForLocality(
+        places: List<PlaceCandidate>,
+        grouped: Map<String, List<PlaceCandidate>>,
+        selectedLocality: String?,
+        targetSlotCount: Int,
+    ): List<PlaceCandidate> {
+        if (selectedLocality == null) return places
+        val sameLocality = grouped.getValue(selectedLocality)
+        if (sameLocality.size >= targetSlotCount) return sameLocality
+
+        val anchor = sameLocality.maxByOrNull { it.externalPopularityScore ?: 0 } ?: return sameLocality
+        val sameIds = sameLocality.map { place -> place.id }.toSet()
+        val nearby = places
+            .filter { it.id !in sameLocality.map { place -> place.id }.toSet() }
+            .filter { distanceKm(anchor, it)?.let { distance -> distance <= NEARBY_LOCALITY_RADIUS_KM } == true }
+            .sortedBy { distanceKm(anchor, it) ?: Double.MAX_VALUE }
+
+        val scoped = (sameLocality + nearby.filter { it.id !in sameIds }).distinctBy { it.id }
+        return if (scoped.size >= targetSlotCount) scoped else places
+    }
+
+    private fun localityScore(group: List<PlaceCandidate>, optionType: ScheduleOptionType, targetSlotCount: Int): Double {
+        val anchorCount = group.count { (it.externalPopularityScore ?: 0) >= 70 }
+        val regionalCount = group.count { it.isRegionalBenefit || isHiddenGem(it) }
+        val restaurantCount = group.count { isRestaurantPlace(it) }
+        val dayActivityCount = group.count { isDayActivityPlace(it) }
+        val sizeFit = minOf(group.size, targetSlotCount) / targetSlotCount.toDouble()
+        val mixScore = when (optionType) {
+            ScheduleOptionType.DISCOVERY -> regionalCount * 2.2 + anchorCount * 0.7
+            ScheduleOptionType.BALANCED -> anchorCount * 1.6 + regionalCount * 1.2
+            ScheduleOptionType.INDIVIDUAL -> anchorCount * 1.4 + regionalCount
+            else -> (anchorCount + regionalCount).toDouble()
+        }
+        return mixScore + restaurantCount * 0.35 + dayActivityCount * 0.25 + sizeFit
+    }
+
+    private fun extractPrimaryLocality(address: String): String? {
+        val normalized = address.trim()
+        val provinceRemoved = normalized.replace(Regex("^(충청남도|충남|전라북도|전북|전라남도|전남|경상북도|경북|경상남도|경남|충청북도|충북)\\s*"), "")
+        return Regex("([가-힣]+(?:시|군))").find(provinceRemoved)?.value
+    }
+
     private fun classifySeverity(gap: Int): ConflictSeverity {
         return when {
             gap <= 20 -> ConflictSeverity.COMMON
@@ -234,16 +338,25 @@ class ConsensusService(
         }
     }
 
-    private fun buildSlotTemplate(
+    private fun buildSlotTemplates(
+        windows: List<ScheduleWindow>,
+        analysis: GroupAnalysis,
+        memberCount: Int,
+    ): List<SlotTemplate> {
+        var nextOrderIndex = 1
+        return windows.flatMap { window ->
+            buildDaySlotTemplate(window, analysis, memberCount).map { slot ->
+                slot.copy(orderIndex = nextOrderIndex++)
+            }
+        }
+    }
+
+    private fun buildDaySlotTemplate(
         window: ScheduleWindow,
         analysis: GroupAnalysis,
         memberCount: Int,
     ): List<SlotTemplate> {
-        val desiredSlotCount = when {
-            analysis.criticalAxes.isNotEmpty() || memberCount >= 4 -> 7
-            analysis.conflictAxes.size >= 2 || analysis.conflictAxes.any { it.severity == ConflictSeverity.MODERATE } -> 6
-            else -> 5
-        }
+        val desiredSlotCount = 3
         val maxSlotsByWindow = (window.totalMinutes / 60).coerceAtLeast(1)
         val slotCount = desiredSlotCount.coerceAtMost(maxSlotsByWindow)
         val weights = SLOT_TEMPLATES[slotCount] ?: List(slotCount) { 1 }
@@ -424,7 +537,7 @@ class ConsensusService(
         )
     }
 
-    private suspend fun materializeOption(
+    private fun prepareOption(
         optionType: ScheduleOptionType,
         label: String,
         summary: String,
@@ -432,26 +545,34 @@ class ConsensusService(
         places: List<PlaceCandidate>,
         threshold: Int,
         preferHiddenGem: Boolean,
-        members: List<MemberSnapshot>,
         tripDate: String,
-        analysis: GroupAnalysis,
         context: OptionContext,
-    ): ScheduleOptionDraft {
+        avoidPlaceIdsByOrder: Map<Int, Set<Long>>,
+        avoidPlaceKeysByOrder: Map<Int, Set<String>>,
+    ): PreparedScheduleOption {
         val chosenPlaces = mutableListOf<PlaceCandidate>()
         val forcedHiddenGemIndex = if (preferHiddenGem) pickForcedHiddenGemSlot(targets) else -1
         val shortlistedPerSlot = mutableListOf<SlotShortlist>()
 
         val slots = targets.mapIndexed { index, target ->
             val profile = buildSlotSelectionProfile(target.startTime, target.endTime, index + 1, targets.size)
+            val orderIndex = index + 1
+            val currentOptionPlaceIds = chosenPlaces.map { it.id }.toSet()
+            val currentOptionPlaceKeys = chosenPlaces.flatMap { placeCandidateKeys(it) }.toSet()
             val rankedPlaces = rankPlaces(
                 targetVector = target.scores,
                 places = places,
-                usedPlaceIds = chosenPlaces.map { it.id }.toSet(),
-                previousPlace = chosenPlaces.lastOrNull(),
+                usedPlaceIds = currentOptionPlaceIds,
+                usedPlaceKeys = currentOptionPlaceKeys,
+                avoidPlaceIds = avoidPlaceIdsByOrder[orderIndex].orEmpty(),
+                avoidPlaceKeys = avoidPlaceKeysByOrder[orderIndex].orEmpty(),
+                previousPlace = previousPlaceInSameTripDay(targets, index, chosenPlaces),
                 preferHiddenGem = preferHiddenGem,
                 mustBeHiddenGem = index == forcedHiddenGemIndex,
                 tripDate = tripDate,
                 profile = profile,
+                recentPlaceIds = context.recentPlaceIds,
+                diversitySalt = context.diversitySalt,
             )
             val place = rankedPlaces.firstOrNull()
                 ?: throw DomainException(HttpStatus.UNPROCESSABLE_ENTITY, "PLACE_CANDIDATE_EMPTY", "일정 생성 후보 장소가 부족합니다.")
@@ -465,7 +586,7 @@ class ConsensusService(
                     slotType = target.slotType,
                     targetUserId = target.targetUserId,
                     reasonAxis = target.reasonAxis,
-                    candidatePlaces = rankedPlaces.take(5).map {
+                    candidatePlaces = rankedPlaces.distinctBy { normalizedPlaceName(it) }.take(5).map {
                         CandidatePlace(it.id, it.name, it.category, it.address)
                     },
                     deterministicPlaceId = place.id,
@@ -488,27 +609,45 @@ class ConsensusService(
             )
         }
 
-        val llmAttempt = llmService.refineScheduleOption(
+        return PreparedScheduleOption(
             optionType = optionType,
             label = label,
             summary = summary,
+            threshold = threshold,
+            places = places,
+            slots = slots,
+            chosenPlaces = chosenPlaces,
+            shortlistedPerSlot = shortlistedPerSlot,
+        )
+    }
+
+    private suspend fun refinePreparedOption(
+        prepared: PreparedScheduleOption,
+        members: List<MemberSnapshot>,
+        analysis: GroupAnalysis,
+        context: OptionContext,
+    ): ScheduleOptionDraft {
+        val llmAttempt = llmService.refineScheduleOption(
+            optionType = prepared.optionType,
+            label = prepared.label,
+            summary = prepared.summary,
             room = RoomRef(roomId = context.roomId, destination = context.destination, tripDate = context.tripDate),
             commonAxes = analysis.commonAxes,
             priorityAxes = analysis.priorityAxes,
             members = members.map { MemberRef(it.userId, it.nickname) },
-            slotPlan = shortlistedPerSlot,
+            slotPlan = prepared.shortlistedPerSlot,
         )
         val llmRefined = llmAttempt.result
 
-        val finalSummary = llmRefined?.summary ?: summary
-        val placesById = places.associateBy { it.id }
+        val finalSummary = llmRefined?.summary ?: prepared.summary
+        val placesById = prepared.places.associateBy { it.id }
         val finalPlacesByOrder = mutableMapOf<Int, PlaceCandidate>()
         llmRefined?.slots?.forEach { slot ->
             placesById[slot.placeId]?.let { finalPlacesByOrder[slot.orderIndex] = it }
         }
 
         val refinedByOrder = llmRefined?.slots?.associateBy { it.orderIndex } ?: emptyMap()
-        val finalSlots = slots.map { slot ->
+        val finalSlots = prepared.slots.map { slot ->
             val refined = refinedByOrder[slot.orderIndex]
             val refinedPlace = refined?.let { finalPlacesByOrder[it.orderIndex] }
             if (refined == null || refinedPlace == null) {
@@ -525,19 +664,19 @@ class ConsensusService(
         }
 
         val finalPlaces = finalSlots.mapIndexed { index, slot ->
-            finalPlacesByOrder[slot.orderIndex] ?: chosenPlaces[index]
+            finalPlacesByOrder[slot.orderIndex] ?: prepared.chosenPlaces[index]
         }
 
-        val satisfactionByUser = buildSatisfaction(optionType, finalSlots, finalPlaces, members)
-        val groupSatisfaction = maxOf(threshold, satisfactionByUser.minOf { it.score })
+        val satisfactionByUser = buildSatisfaction(prepared.optionType, finalSlots, finalPlaces, members)
+        val groupSatisfaction = maxOf(prepared.threshold, satisfactionByUser.minOf { it.score })
 
         logger.info {
-            "schedule_option optionType=$optionType roomId=${context.roomId} provider=${llmRefined?.provider ?: DETERMINISTIC_PROVIDER} attemptedProvider=${llmAttempt.attemptedProvider} latencyMs=${llmAttempt.latencyMs ?: 0} fallbackUsed=${llmAttempt.fallbackUsed} fallbackReason=${llmAttempt.fallbackReason?.code ?: "none"} groupSatisfaction=$groupSatisfaction"
+            "schedule_option optionType=${prepared.optionType} roomId=${context.roomId} provider=${llmRefined?.provider ?: DETERMINISTIC_PROVIDER} attemptedProvider=${llmAttempt.attemptedProvider} latencyMs=${llmAttempt.latencyMs ?: 0} fallbackUsed=${llmAttempt.fallbackUsed} fallbackReason=${llmAttempt.fallbackReason?.code ?: "none"} groupSatisfaction=$groupSatisfaction"
         }
 
         return ScheduleOptionDraft(
-            optionType = optionType,
-            label = label,
+            optionType = prepared.optionType,
+            label = prepared.label,
             summary = finalSummary,
             groupSatisfaction = groupSatisfaction,
             slots = finalSlots,
@@ -548,6 +687,105 @@ class ConsensusService(
             fallbackUsed = llmAttempt.fallbackUsed,
             llmFallbackReason = llmAttempt.fallbackReason?.code,
         )
+    }
+
+    private fun resolveCrossOptionPlaceCollisions(
+        options: List<ScheduleOptionDraft>,
+        preparedOptions: List<PreparedScheduleOption>,
+        members: List<MemberSnapshot>,
+    ): List<ScheduleOptionDraft> {
+        val usedPlaceIdsByOrder = mutableMapOf<Int, MutableSet<Long>>()
+        val usedPlaceKeysByOrder = mutableMapOf<Int, MutableSet<String>>()
+
+        return options.zip(preparedOptions).map { (option, prepared) ->
+            val placesById = prepared.places.associateBy { it.id }
+            val currentOptionPlaceIds = mutableSetOf<Long>()
+            val currentOptionPlaceKeys = mutableSetOf<String>()
+            val adjustedSlots = option.slots.map { slot ->
+                val slotKeys = scheduleSlotPlaceKeys(slot)
+                val duplicateByOrder = slot.placeId in usedPlaceIdsByOrder[slot.orderIndex].orEmpty() ||
+                    slotKeys.any { it in usedPlaceKeysByOrder[slot.orderIndex].orEmpty() }
+                val duplicateInOption = slot.placeId in currentOptionPlaceIds || slotKeys.any { it in currentOptionPlaceKeys }
+                val adjusted = if (duplicateByOrder || duplicateInOption) {
+                    replacementSlot(slot, prepared, usedPlaceIdsByOrder[slot.orderIndex].orEmpty(), usedPlaceKeysByOrder[slot.orderIndex].orEmpty(), currentOptionPlaceIds, currentOptionPlaceKeys)
+                } else {
+                    slot
+                }
+                currentOptionPlaceIds.add(adjusted.placeId)
+                currentOptionPlaceKeys.addAll(scheduleSlotPlaceKeys(adjusted))
+                usedPlaceIdsByOrder.getOrPut(adjusted.orderIndex) { mutableSetOf() }.add(adjusted.placeId)
+                usedPlaceKeysByOrder.getOrPut(adjusted.orderIndex) { mutableSetOf() }.addAll(scheduleSlotPlaceKeys(adjusted))
+                adjusted
+            }
+
+            val adjustedPlaces = adjustedSlots.mapNotNull { placesById[it.placeId] }
+            if (adjustedPlaces.size != adjustedSlots.size) {
+                option.copy(slots = adjustedSlots)
+            } else {
+                val satisfactionByUser = buildSatisfaction(option.optionType, adjustedSlots, adjustedPlaces, members)
+                option.copy(
+                    slots = adjustedSlots,
+                    satisfactionByUser = satisfactionByUser,
+                    groupSatisfaction = maxOf(prepared.threshold, satisfactionByUser.minOf { it.score }),
+                )
+            }
+        }
+    }
+
+    private fun replacementSlot(
+        slot: ScheduleSlotDraft,
+        prepared: PreparedScheduleOption,
+        usedPlaceIdsForOrder: Set<Long>,
+        usedPlaceKeysForOrder: Set<String>,
+        currentOptionPlaceIds: Set<Long>,
+        currentOptionPlaceKeys: Set<String>,
+    ): ScheduleSlotDraft {
+        val placesById = prepared.places.associateBy { it.id }
+        val shortlistedIds = prepared.shortlistedPerSlot
+            .firstOrNull { it.orderIndex == slot.orderIndex }
+            ?.candidatePlaces
+            ?.map { it.id }
+            .orEmpty()
+        val candidateIds = (shortlistedIds + prepared.slots.map { it.placeId } + prepared.places.map { it.id }).distinct()
+        val replacement = candidateIds
+            .asSequence()
+            .mapNotNull { placesById[it] }
+            .firstOrNull { candidate ->
+                val keys = placeCandidateKeys(candidate)
+                candidate.id !in usedPlaceIdsForOrder &&
+                    candidate.id !in currentOptionPlaceIds &&
+                    keys.none { it in usedPlaceKeysForOrder } &&
+                    keys.none { it in currentOptionPlaceKeys }
+            } ?: return slot
+
+        return slot.copy(
+            placeId = replacement.id,
+            placeName = replacement.name,
+            placeAddress = replacement.address,
+            isHiddenGem = isHiddenGem(replacement),
+        )
+    }
+
+    private data class PreparedScheduleOption(
+        val optionType: ScheduleOptionType,
+        val label: String,
+        val summary: String,
+        val threshold: Int,
+        val places: List<PlaceCandidate>,
+        val slots: List<ScheduleSlotDraft>,
+        val chosenPlaces: List<PlaceCandidate>,
+        val shortlistedPerSlot: List<SlotShortlist>,
+    )
+
+    private fun rememberUsedPlacesByOrder(
+        usedPlaceIdsByOrder: MutableMap<Int, MutableSet<Long>>,
+        usedPlaceKeysByOrder: MutableMap<Int, MutableSet<String>>,
+        slots: List<ScheduleSlotDraft>,
+    ) {
+        slots.forEach { slot ->
+            usedPlaceIdsByOrder.getOrPut(slot.orderIndex) { mutableSetOf() }.add(slot.placeId)
+            usedPlaceKeysByOrder.getOrPut(slot.orderIndex) { mutableSetOf() }.addAll(scheduleSlotPlaceKeys(slot))
+        }
     }
 
     private fun buildSatisfaction(
@@ -591,15 +829,33 @@ class ConsensusService(
         return if (personalIndex >= 0) personalIndex else targets.size / 2
     }
 
+    private fun previousPlaceInSameTripDay(
+        targets: List<TargetVector>,
+        currentIndex: Int,
+        chosenPlaces: List<PlaceCandidate>,
+    ): PlaceCandidate? {
+        if (currentIndex <= 0) return null
+        val previousTarget = targets.getOrNull(currentIndex - 1) ?: return null
+        val currentTarget = targets.getOrNull(currentIndex) ?: return null
+        val sameTripDay = previousTarget.startTime.atZone(ZoneId.of("Asia/Seoul")).toLocalDate() ==
+            currentTarget.startTime.atZone(ZoneId.of("Asia/Seoul")).toLocalDate()
+        return chosenPlaces.lastOrNull()?.takeIf { sameTripDay }
+    }
+
     private fun rankPlaces(
         targetVector: AxisScores,
         places: List<PlaceCandidate>,
         usedPlaceIds: Set<Long>,
+        usedPlaceKeys: Set<String>,
+        avoidPlaceIds: Set<Long>,
+        avoidPlaceKeys: Set<String>,
         previousPlace: PlaceCandidate?,
         preferHiddenGem: Boolean,
         mustBeHiddenGem: Boolean,
         tripDate: String,
         profile: SlotSelectionProfile,
+        recentPlaceIds: Set<Long>,
+        diversitySalt: Long,
     ): List<PlaceCandidate> {
         val source = if (mustBeHiddenGem) places.filter { isHiddenGem(it) } else places
         var pool = if (source.isNotEmpty()) source else places
@@ -620,9 +876,56 @@ class ConsensusService(
             if (restaurants.isNotEmpty()) pool = restaurants
         }
 
-        return pool.sortedByDescending {
-            placeRankingScore(it, targetVector, previousPlace, preferHiddenGem, usedPlaceIds, tripDate, profile)
+        val currentOptionPlaceKeys = usedPlaceKeys + places
+            .filter { it.id in usedPlaceIds }
+            .flatMap { placeCandidateKeys(it) }
+            .toSet()
+        val softAvoidPlaceKeys = avoidPlaceKeys + places
+            .filter { it.id in avoidPlaceIds }
+            .flatMap { placeCandidateKeys(it) }
+            .toSet()
+        fun List<PlaceCandidate>.withoutCurrentOptionPlaces(): List<PlaceCandidate> = filter {
+            it.id !in usedPlaceIds && placeCandidateKeys(it).none { key -> key in currentOptionPlaceKeys }
         }
+        fun List<PlaceCandidate>.withoutSoftAvoidPlaces(): List<PlaceCandidate> = filter {
+            it.id !in avoidPlaceIds && placeCandidateKeys(it).none { key -> key in softAvoidPlaceKeys }
+        }
+
+        val currentOptionUnused = pool.withoutCurrentOptionPlaces()
+        val preferredUnused = currentOptionUnused.withoutSoftAvoidPlaces()
+        val broadlyPreferredUnused = places.withoutCurrentOptionPlaces().withoutSoftAvoidPlaces()
+        val broadlyCurrentOptionUnused = places.withoutCurrentOptionPlaces()
+        pool = when {
+            preferredUnused.isNotEmpty() -> preferredUnused
+            broadlyPreferredUnused.isNotEmpty() -> broadlyPreferredUnused
+            currentOptionUnused.isNotEmpty() -> currentOptionUnused
+            broadlyCurrentOptionUnused.isNotEmpty() -> broadlyCurrentOptionUnused
+            else -> emptyList()
+        }
+
+        return pool.distinctBy { normalizedPlaceName(it) }.sortedByDescending {
+            placeRankingScore(it, targetVector, previousPlace, preferHiddenGem, usedPlaceIds + avoidPlaceIds, recentPlaceIds, tripDate, profile, diversitySalt)
+        }
+    }
+
+    private fun placeCandidateKeys(place: PlaceCandidate): Set<String> {
+        val name = normalizedPlaceName(place)
+        val address = normalizedPlaceAddress(place.address)
+        return setOf(name, "$name|$address").filter { it.isNotBlank() }.toSet()
+    }
+
+    private fun scheduleSlotPlaceKeys(slot: ScheduleSlotDraft): Set<String> {
+        val name = normalizePlaceText(slot.placeName)
+        val address = normalizedPlaceAddress(slot.placeAddress)
+        return setOf(name, "$name|$address").filter { it.isNotBlank() }.toSet()
+    }
+
+    private fun normalizedPlaceName(place: PlaceCandidate): String = normalizePlaceText(place.name)
+
+    private fun normalizedPlaceAddress(address: String): String = normalizePlaceText(address)
+
+    private fun normalizePlaceText(value: String): String {
+        return value.trim().lowercase().replace(Regex("[\\s\\p{Punct}]+"), "")
     }
 
     private fun placeRankingScore(
@@ -631,14 +934,27 @@ class ConsensusService(
         previousPlace: PlaceCandidate?,
         preferHiddenGem: Boolean,
         usedPlaceIds: Set<Long>,
+        recentPlaceIds: Set<Long>,
         tripDate: String,
         profile: SlotSelectionProfile,
+        diversitySalt: Long,
     ): Double {
         var score = calculateVectorMatch(targetVector, placeScores(place))
         if (usedPlaceIds.contains(place.id)) score -= 0.2
+        if (recentPlaceIds.contains(place.id)) score -= 0.28
         if (previousPlace != null && previousPlace.category == place.category) score -= 0.08
+        if (previousPlace != null) {
+            val distance = distanceKm(previousPlace, place)
+            when {
+                distance == null -> score -= 0.03
+                distance <= 3.0 -> score += 0.08
+                distance <= 8.0 -> score += 0.03
+                distance > 20.0 -> score -= 0.35
+                distance > 12.0 -> score -= 0.18
+            }
+        }
         if (hasUnknownHours(place)) score -= 0.08
-        if (preferHiddenGem && isHiddenGem(place)) score += 0.2
+        score += regionalCoexistenceModifier(place, preferHiddenGem, profile)
 
         val operatingAvailability = isPlaceOpenDuringSlot(place, profile)
         when (operatingAvailability) {
@@ -648,7 +964,52 @@ class ConsensusService(
         }
 
         score += placeCategoryModifier(place, tripDate, profile)
+        score += diversityJitter(place.id, diversitySalt)
         return score
+    }
+
+    private fun diversityJitter(placeId: Long, salt: Long): Double {
+        if (salt == 0L) return 0.0
+        val mixed = placeId * 1103515245L + salt * 12345L
+        val bucket = Math.floorMod(mixed, 1000L)
+        return bucket / 1000.0 * 0.04
+    }
+
+    private fun distanceKm(from: PlaceCandidate, to: PlaceCandidate): Double? {
+        val fromLat = from.latitude ?: return null
+        val fromLon = from.longitude ?: return null
+        val toLat = to.latitude ?: return null
+        val toLon = to.longitude ?: return null
+        val earthRadiusKm = 6371.0
+        val dLat = Math.toRadians(toLat - fromLat)
+        val dLon = Math.toRadians(toLon - fromLon)
+        val lat1 = Math.toRadians(fromLat)
+        val lat2 = Math.toRadians(toLat)
+        val a = sin(dLat / 2) * sin(dLat / 2) +
+            cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2)
+        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return earthRadiusKm * c
+    }
+
+    private fun regionalCoexistenceModifier(
+        place: PlaceCandidate,
+        preferRegionalBenefit: Boolean,
+        profile: SlotSelectionProfile,
+    ): Double {
+        val popularity = place.externalPopularityScore
+        val confidenceBonus = (place.externalSignalConfidence / 100.0) * 0.04
+        val regionalBenefitBonus = if (place.isRegionalBenefit || isHiddenGem(place)) {
+            if (preferRegionalBenefit) 0.22 else 0.08
+        } else {
+            0.0
+        }
+        val anchorBridgeBonus = if (!preferRegionalBenefit && popularity != null && popularity >= 70 && (profile.isEarlySlot || profile.isFinalSlot)) {
+            0.10
+        } else {
+            0.0
+        }
+        val overPopularPenalty = if (preferRegionalBenefit && popularity != null && popularity >= 80) -0.06 else 0.0
+        return confidenceBonus + regionalBenefitBonus + anchorBridgeBonus + overPopularPenalty
     }
 
     private fun placeCategoryModifier(place: PlaceCandidate, tripDate: String, profile: SlotSelectionProfile): Double {
@@ -698,12 +1059,16 @@ class ConsensusService(
     }
 
     private fun isHiddenGem(place: PlaceCandidate): Boolean {
+        if (place.isRegionalBenefit) return true
         val tags = place.metadataTags ?: return false
         val tagList = tags["tags"] as? List<*>
         if (tagList != null) {
-            return tagList.any { it in listOf("hidden_gem", "population_decline") }
+            return tagList.any { it in listOf("hidden_gem", "population_decline", "regional_benefit") }
         }
-        return tags["hiddenGem"] == true || tags["populationDeclineArea"] == true || tags["regionType"] == "population_decline"
+        return tags["hiddenGem"] == true ||
+            tags["populationDeclineArea"] == true ||
+            tags["regionalBenefit"] == true ||
+            tags["regionType"] == "population_decline"
     }
 
     private fun buildSlotSelectionProfile(

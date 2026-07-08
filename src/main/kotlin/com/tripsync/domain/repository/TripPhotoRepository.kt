@@ -47,6 +47,8 @@ interface TripPhotoRepository : JpaRepository<TripPhoto, Long> {
         status: PhotoStatus,
     ): List<TripPhoto>
 
+    fun findAllByRoomIdAndDelYn(roomId: Long, delYn: YnFlag): List<TripPhoto>
+
     fun countByScheduleIdAndDelYnAndStatus(scheduleId: Long, delYn: YnFlag, status: PhotoStatus): Long
     fun countByScheduleSlotIdAndDelYnAndStatus(scheduleSlotId: Long, delYn: YnFlag, status: PhotoStatus): Long
     fun countByScheduleIdAndUploaderIdAndDelYnAndStatus(scheduleId: Long, uploaderId: Long, delYn: YnFlag, status: PhotoStatus): Long

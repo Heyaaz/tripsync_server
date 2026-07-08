@@ -10,7 +10,11 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.springframework.http.HttpStatus
+import org.springframework.web.reactive.function.client.ClientResponse
 import org.springframework.web.reactive.function.client.WebClient
+import reactor.core.publisher.Mono
+import java.time.Duration
 
 class OpenAiClientTest {
     private val client = OpenAiClient(
@@ -52,6 +56,41 @@ class OpenAiClientTest {
             "outcome", "fallback",
             "reason", "api_key_missing",
         ).count())
+    }
+
+    @Test
+    fun `refine schedule falls back quickly when openai call exceeds configured timeout`() = runBlocking {
+        val slowWebClient = WebClient.builder()
+            .exchangeFunction {
+                Mono.delay(Duration.ofSeconds(3))
+                    .thenReturn(ClientResponse.create(HttpStatus.OK).body("{}").build())
+            }
+            .build()
+        val timeoutClient = OpenAiClient(
+            webClient = slowWebClient,
+            objectMapper = ObjectMapper(),
+            apiKey = "test-key",
+            model = "gpt-test",
+            timeoutSeconds = 1,
+            meterRegistry = SimpleMeterRegistry(),
+        )
+
+        val startNanos = System.nanoTime()
+        val attempt = timeoutClient.refineSchedule(
+            optionType = ScheduleOptionType.BALANCED,
+            label = "균형형",
+            summary = "요약",
+            room = ConsensusService.RoomRef(roomId = 1, destination = "충남", tripDate = "2026-06-01"),
+            commonAxes = emptyList(),
+            priorityAxes = emptyList(),
+            members = emptyList(),
+            slotPlan = emptyList(),
+        )
+        val elapsedMillis = Duration.ofNanos(System.nanoTime() - startNanos).toMillis()
+
+        assertTrue(attempt.fallbackUsed)
+        assertEquals(LlmService.FallbackReason.API_CALL_FAILED, attempt.fallbackReason)
+        assertTrue(elapsedMillis < 2_500, "OpenAI timeout fallback should happen near the configured timeout")
     }
 
     @Test
@@ -106,6 +145,29 @@ class OpenAiClientTest {
             slots = listOf(LlmService.RefinedSlot(orderIndex = 1, placeId = 999, reason = "후보 밖")),
         )
         val slotPlan = listOf(shortlist(orderIndex = 1, placeId = 10))
+
+        val error = assertThrows(OpenAiClient.LlmParseException::class.java) {
+            client.validateRefinement(result, slotPlan)
+        }
+
+        assertEquals(LlmService.FallbackReason.RESPONSE_SCHEMA_INVALID, error.reason)
+    }
+
+    @Test
+    fun `validate refinement rejects duplicated place selections in one schedule`() {
+        val result = LlmService.RefinementResult(
+            summary = "요약",
+            provider = "openai/gpt-test",
+            latencyMs = 10,
+            slots = listOf(
+                LlmService.RefinedSlot(orderIndex = 1, placeId = 10, reason = "첫 슬롯"),
+                LlmService.RefinedSlot(orderIndex = 2, placeId = 10, reason = "중복 슬롯"),
+            ),
+        )
+        val slotPlan = listOf(
+            shortlist(orderIndex = 1, placeId = 10),
+            shortlist(orderIndex = 2, placeId = 10),
+        )
 
         val error = assertThrows(OpenAiClient.LlmParseException::class.java) {
             client.validateRefinement(result, slotPlan)

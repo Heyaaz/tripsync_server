@@ -16,6 +16,7 @@ import org.springframework.jdbc.core.JdbcTemplate
         "spring.jpa.properties.hibernate.format_sql=false",
         "spring.flyway.enabled=true",
         "logging.level.org.hibernate.SQL=INFO",
+        "jwt.secret=migration-test-secret-key-256-bits-min",
     ]
 )
 class FlywayMigrationValidationTest(

@@ -71,7 +71,7 @@ class ScheduleRoomAdversarialContractTest(
             jsonPath("$.data.satisfactionByUser[0].nickname") { value(fixture.host.nickname) }
         }
 
-        mockMvc.get("/share/schedules/${fixture.schedule.id}")
+        mockMvc.get("/share/schedules/${fixture.schedule.shareToken}")
             .andExpect {
                 status { isOk() }
                 jsonPath("$.success") { value(true) }

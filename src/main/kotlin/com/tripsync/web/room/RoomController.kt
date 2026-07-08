@@ -20,7 +20,9 @@ class RoomController(
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     fun createRoom(@Valid @RequestBody dto: CreateRoomDto, @CurrentUser user: User): ApiResponse<Map<String, Any?>> {
-        return roomService.createRoom(user, dto.destination, LocalDate.parse(dto.tripDate), dto.roomName)
+        val startDate = LocalDate.parse(dto.tripStartDate ?: dto.tripDate)
+        val endDate = LocalDate.parse(dto.tripEndDate ?: dto.tripStartDate ?: dto.tripDate)
+        return roomService.createRoom(user, dto.destination, startDate, endDate, dto.roomName)
     }
 
     @GetMapping("/my")
@@ -56,6 +58,11 @@ class RoomController(
     @GetMapping("/{roomId}/members")
     fun getMembers(@PathVariable roomId: Long, @CurrentUser user: User): ApiResponse<Map<String, Any?>> {
         return roomService.getMembers(roomId, user)
+    }
+
+    @DeleteMapping("/{roomId}")
+    fun deleteRoom(@PathVariable roomId: Long, @CurrentUser user: User): ApiResponse<Map<String, Any?>> {
+        return roomService.deleteRoom(roomId, user)
     }
 
     @GetMapping("/{roomId}")

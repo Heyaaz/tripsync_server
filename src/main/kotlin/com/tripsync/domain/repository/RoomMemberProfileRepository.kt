@@ -29,6 +29,7 @@ interface RoomMemberProfileRepository : JpaRepository<RoomMemberProfile, Long> {
     ): List<MemberNicknameProjection>
 
     fun findByRoomIdAndUserId(roomId: Long, userId: Long): RoomMemberProfile?
+    fun findAllByRoomId(roomId: Long): List<RoomMemberProfile>
     fun countByRoomIdAndDelYn(roomId: Long, delYn: YnFlag): Long
 }
 

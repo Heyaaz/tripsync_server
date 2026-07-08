@@ -1,5 +1,6 @@
 package com.tripsync.domain.entity
 
+import com.tripsync.common.security.ShareTokenGenerator
 import com.tripsync.domain.enums.ScheduleOptionType
 import jakarta.persistence.*
 import org.hibernate.annotations.JdbcTypeCode
@@ -47,6 +48,9 @@ class Schedule(
 
     @Column(name = "llm_provider", length = 50)
     var llmProvider: String? = null,
+
+    @Column(name = "share_token", nullable = false, unique = true, length = 64)
+    var shareToken: String = ShareTokenGenerator.generate(),
 ) : BaseEntity() {
     @OneToMany(mappedBy = "schedule", fetch = FetchType.LAZY, cascade = [CascadeType.ALL], orphanRemoval = true)
     val slots: MutableList<ScheduleSlot> = mutableListOf()

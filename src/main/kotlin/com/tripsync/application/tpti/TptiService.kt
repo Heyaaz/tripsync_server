@@ -58,6 +58,7 @@ class TptiService(
         return ApiResponse.ok(
             mapOf(
                 "resultId" to result.id,
+                "shareToken" to result.shareToken,
                 "userId" to user.id,
                 "scores" to mapOf(
                     "mobility" to result.mobilityScore,
@@ -83,9 +84,9 @@ class TptiService(
     }
 
     @Transactional(readOnly = true)
-    fun getPublicShareResult(resultId: Long): ApiResponse<Map<String, Any>> {
-        val result = tptiResultRepository.findById(resultId).orElse(null)
-        if (result == null || result.delYn != YnFlag.N) {
+    fun getPublicShareResult(shareToken: String): ApiResponse<Map<String, Any>> {
+        val result = tptiResultRepository.findByShareTokenAndDelYn(shareToken, YnFlag.N)
+        if (result == null) {
             throw DomainException(HttpStatus.NOT_FOUND, "RESOURCE_DELETED", "공유할 TPTI 결과를 찾을 수 없습니다.")
         }
         return ApiResponse.ok(resultResponse(result) + mapOf("nickname" to result.user.nickname))
@@ -136,6 +137,7 @@ class TptiService(
 
     private fun resultResponse(result: TptiResult): Map<String, Any> = mapOf(
         "resultId" to result.id,
+        "shareToken" to result.shareToken,
         "userId" to result.user.id,
         "scores" to mapOf(
             "mobility" to result.mobilityScore,

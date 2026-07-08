@@ -12,8 +12,12 @@ import org.springframework.stereotype.Repository
 
 @Repository
 interface ScheduleRepository : JpaRepository<Schedule, Long> {
+    fun findByRoomIdAndDelYn(roomId: Long, delYn: YnFlag): List<Schedule>
+    fun findByRoomId(roomId: Long): List<Schedule>
+    fun findTopByRoomIdAndDelYnOrderByVersionDesc(roomId: Long, delYn: YnFlag): Schedule?
     fun findTopByRoomIdAndDelYnOrderByVersionDescIdDesc(roomId: Long, delYn: YnFlag): Schedule?
     fun findTopByRoomIdAndDelYnAndIsConfirmedTrueOrderByVersionDescIdDesc(roomId: Long, delYn: YnFlag): Schedule?
+    fun findByShareTokenAndDelYn(shareToken: String, delYn: YnFlag): Schedule?
 
     @EntityGraph(attributePaths = ["room"])
     fun findByIdAndDelYn(id: Long, delYn: YnFlag): Schedule?
@@ -25,6 +29,21 @@ interface ScheduleRepository : JpaRepository<Schedule, Long> {
         version: Int,
         optionType: ScheduleOptionType,
     ): Schedule?
+
+    @Query(
+        """
+        select schedule
+        from Schedule schedule
+        where schedule.room.id = :roomId
+          and schedule.delYn = :delYn
+          and schedule.isConfirmed = true
+        order by schedule.version desc, schedule.id desc
+        """
+    )
+    fun findConfirmedByRoomId(
+        @Param("roomId") roomId: Long,
+        @Param("delYn") delYn: YnFlag,
+    ): List<Schedule>
 
     @Query(
         nativeQuery = true,

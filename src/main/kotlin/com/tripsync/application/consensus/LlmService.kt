@@ -5,7 +5,7 @@ import com.tripsync.infrastructure.llm.OpenAiClient
 import org.springframework.stereotype.Service
 
 @Service
-class LlmService(
+open class LlmService(
     private val openAiClient: OpenAiClient,
 ) {
 
@@ -39,7 +39,7 @@ class LlmService(
         val failureDetail: String? = null,
     )
 
-    suspend fun refineScheduleOption(
+    open suspend fun refineScheduleOption(
         optionType: ScheduleOptionType,
         label: String,
         summary: String,

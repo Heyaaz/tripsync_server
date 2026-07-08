@@ -5,6 +5,7 @@ import com.tripsync.application.auth.JwtAuthenticationFilter
 import com.tripsync.application.auth.JwtTokenProvider
 import com.tripsync.application.auth.OAuthSessionService
 import com.tripsync.common.dto.ApiResponse
+import com.tripsync.common.exception.DomainException
 import com.tripsync.common.security.CurrentUser
 import com.tripsync.domain.entity.User
 import com.tripsync.domain.enums.AuthProvider
@@ -15,6 +16,7 @@ import com.tripsync.web.dto.LoginDto
 import com.tripsync.web.dto.RegisterDto
 import jakarta.servlet.http.HttpServletResponse
 import jakarta.validation.Valid
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseCookie
@@ -30,6 +32,7 @@ class AuthController(
     private val passwordEncoder: PasswordEncoder,
     private val guestSessionService: GuestSessionService,
     private val oAuthSessionService: OAuthSessionService,
+    @Value("\${security.cookie.secure:false}") private val secureCookies: Boolean,
 ) {
 
     @PostMapping("/register")
@@ -37,7 +40,7 @@ class AuthController(
     fun register(@Valid @RequestBody dto: RegisterDto, response: HttpServletResponse): ApiResponse<Map<String, Any>> {
         val email = dto.email.trim().lowercase()
         if (userRepository.findByEmailAndDelYn(email, YnFlag.N) != null) {
-            return ApiResponse.error("INVALID_REQUEST", "이미 사용 중인 이메일입니다.")
+            throw DomainException(HttpStatus.CONFLICT, "INVALID_REQUEST", "이미 사용 중인 이메일입니다.")
         }
 
         val user = userRepository.save(
@@ -57,10 +60,10 @@ class AuthController(
     @PostMapping("/login")
     fun login(@Valid @RequestBody dto: LoginDto, response: HttpServletResponse): ApiResponse<Map<String, Any>> {
         val user = userRepository.findByEmailAndDelYn(dto.email.trim().lowercase(), YnFlag.N)
-            ?: return ApiResponse.error("UNAUTHORIZED", "이메일 또는 비밀번호가 올바르지 않습니다.")
+            ?: throw DomainException(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "이메일 또는 비밀번호가 올바르지 않습니다.")
 
         if (user.authProvider != AuthProvider.LOCAL || user.passwordHash == null || !passwordEncoder.matches(dto.password, user.passwordHash)) {
-            return ApiResponse.error("UNAUTHORIZED", "이메일 또는 비밀번호가 올바르지 않습니다.")
+            throw DomainException(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "이메일 또는 비밀번호가 올바르지 않습니다.")
         }
 
         val token = issueSessionCookie(user, response)
@@ -158,7 +161,7 @@ class AuthController(
     private fun sessionCookie(token: String): ResponseCookie = ResponseCookie
         .from(JwtAuthenticationFilter.SESSION_COOKIE_NAME, token)
         .httpOnly(true)
-        .secure(false)
+        .secure(secureCookies)
         .sameSite("Lax")
         .path("/")
         .maxAge(Duration.ofDays(7))
@@ -167,7 +170,7 @@ class AuthController(
     private fun expiredSessionCookie(): ResponseCookie = ResponseCookie
         .from(JwtAuthenticationFilter.SESSION_COOKIE_NAME, "")
         .httpOnly(true)
-        .secure(false)
+        .secure(secureCookies)
         .sameSite("Lax")
         .path("/")
         .maxAge(Duration.ZERO)
@@ -176,7 +179,7 @@ class AuthController(
     private fun oauthStateCookie(state: String): ResponseCookie = ResponseCookie
         .from(OAUTH_STATE_COOKIE_NAME, state)
         .httpOnly(true)
-        .secure(false)
+        .secure(secureCookies)
         .sameSite("Lax")
         .path("/")
         .maxAge(Duration.ofMinutes(10))
@@ -185,7 +188,7 @@ class AuthController(
     private fun expiredOAuthStateCookie(): ResponseCookie = ResponseCookie
         .from(OAUTH_STATE_COOKIE_NAME, "")
         .httpOnly(true)
-        .secure(false)
+        .secure(secureCookies)
         .sameSite("Lax")
         .path("/")
         .maxAge(Duration.ZERO)

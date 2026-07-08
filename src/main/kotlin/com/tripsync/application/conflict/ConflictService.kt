@@ -106,7 +106,7 @@ class ConflictService(
         conflictAxes: List<Map<String, Any>>,
         summaryText: String,
     ): com.tripsync.domain.entity.ConflictMap {
-        val lockedRoom = tripRoomRepository.findLockedByIdAndDelYn(roomId, YnFlag.N)
+        val lockedRoom = tripRoomRepository.findActiveByIdForUpdate(roomId, YnFlag.N)
             ?: throw DomainException(HttpStatus.NOT_FOUND, "ROOM_NOT_FOUND", "존재하지 않는 방입니다.")
         val activeMaps = conflictMapRepository.findAllByRoomIdAndDelYnOrderByCreatedAtDescIdDesc(roomId, YnFlag.N)
         val latest = activeMaps.firstOrNull()

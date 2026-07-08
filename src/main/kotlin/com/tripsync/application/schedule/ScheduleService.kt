@@ -39,14 +39,18 @@ class ScheduleService(
         val members = generationContext.members
         val placesById = generationContext.placesById
 
+        val recentPlaceIds = latestGeneratedPlaceIds(roomId)
         val context = OptionContext(
             roomId = roomId,
             destination = dto.destination,
-            tripDate = dto.tripDate,
+            tripDate = dto.tripStartDate ?: dto.tripDate,
+            tripEndDate = dto.tripEndDate ?: dto.tripStartDate ?: dto.tripDate,
             startTime = dto.startTime,
             endTime = dto.endTime,
             members = members,
             places = generationContext.places,
+            recentPlaceIds = recentPlaceIds,
+            diversitySalt = System.nanoTime(),
         )
 
         val options = runBlocking { consensusService.buildScheduleOptions(context) }
@@ -74,6 +78,16 @@ class ScheduleService(
                 },
             )
         )
+    }
+
+
+    private fun latestGeneratedPlaceIds(roomId: Long): Set<Long> {
+        val schedules = scheduleRepository.findByRoomIdAndDelYn(roomId, YnFlag.N)
+        val latestVersion = schedules.maxOfOrNull { it.version } ?: return emptySet()
+        return schedules
+            .filter { it.version == latestVersion }
+            .flatMap { scheduleSlotRepository.findActivePlaceIdsByScheduleId(it.id, YnFlag.N) }
+            .toSet()
     }
 
     @Transactional(readOnly = true)
@@ -106,16 +120,15 @@ class ScheduleService(
                     .thenBy { it.name }
             )
             .take(30)
-            .map { place ->
-                responseMapper.formatPlace(place, place.id, place.name, place.address) + mapOf(
-                    "alreadyAdded" to usedPlaceIds.contains(place.id),
-                )
-            }
             .toList()
+        val formattedPlaces = responseMapper.formatPlaces(places)
+            .map { place ->
+                place + mapOf("alreadyAdded" to usedPlaceIds.contains(place["id"]))
+            }
 
         return ApiResponse.ok(
             mapOf(
-                "places" to places,
+                "places" to formattedPlaces,
                 "query" to query.trim(),
             )
         )
@@ -196,6 +209,7 @@ class ScheduleService(
         return ApiResponse.ok(
             mapOf(
                 "scheduleId" to target.id,
+                "shareToken" to target.shareToken,
                 "roomId" to roomId,
                 "optionType" to target.optionType.name.lowercase(),
                 "status" to "confirmed",
@@ -231,8 +245,9 @@ class ScheduleService(
     }
 
     @Transactional(readOnly = true)
-    fun getPublicShareSchedule(scheduleId: Long): ApiResponse<Map<String, Any?>> {
-        val schedule = accessPolicy.getActiveSchedule(scheduleId)
+    fun getPublicShareSchedule(shareToken: String): ApiResponse<Map<String, Any?>> {
+        val schedule = scheduleRepository.findByShareTokenAndDelYn(shareToken, YnFlag.N)
+            ?: throw DomainException(HttpStatus.NOT_FOUND, "SCHEDULE_NOT_FOUND", "공유 일정을 찾을 수 없습니다.")
         return ApiResponse.ok(scheduleReadAssembler.formatPublicShareSchedule(schedule))
     }
 
@@ -335,7 +350,7 @@ class ScheduleService(
         val input = schedule.generationInput
         val startText = input["startTime"]?.toString()?.takeIf { it.isNotBlank() } ?: "09:00"
         val endText = input["endTime"]?.toString()?.takeIf { it.isNotBlank() } ?: "21:00"
-        val tripDate = LocalDate.parse(schedule.room.tripDate.toString())
+        val tripDate = LocalDate.parse(schedule.room.tripStartDate.toString())
         val zone = ZoneId.of("Asia/Seoul")
         val startParts = startText.split(":")
         val endParts = endText.split(":")

@@ -4,6 +4,7 @@ import com.tripsync.domain.entity.AxisScores
 import com.tripsync.application.consensus.MemberSnapshot
 import com.tripsync.application.consensus.PlaceCandidate
 import com.tripsync.application.consensus.ScheduleOptionDraft
+import com.tripsync.application.consensus.ScheduleSlotDraft
 import com.tripsync.common.exception.DomainException
 import com.tripsync.domain.entity.Place
 import com.tripsync.domain.entity.SatisfactionScore
@@ -14,10 +15,12 @@ import com.tripsync.domain.enums.TripRoomStatus
 import com.tripsync.domain.enums.YnFlag
 import com.tripsync.domain.repository.PlaceQueryRepository
 import com.tripsync.domain.repository.PlaceRepository
+import com.tripsync.domain.repository.ExternalPopularityMetricRepository
 import com.tripsync.domain.repository.RoomMemberProfileRepository
 import com.tripsync.domain.repository.SatisfactionScoreRepository
 import com.tripsync.domain.repository.ScheduleRepository
 import com.tripsync.domain.repository.ScheduleSlotRepository
+import com.tripsync.domain.repository.TripRoomRepository
 import com.tripsync.domain.repository.UserRepository
 import com.tripsync.web.dto.GenerateScheduleDto
 import org.springframework.http.HttpStatus
@@ -32,7 +35,9 @@ class ScheduleGenerationPersistenceService(
     private val roomMemberProfileRepository: RoomMemberProfileRepository,
     private val placeRepository: PlaceRepository,
     private val placeQueryRepository: PlaceQueryRepository,
+    private val externalPopularityMetricRepository: ExternalPopularityMetricRepository,
     private val userRepository: UserRepository,
+    private val tripRoomRepository: TripRoomRepository,
     private val accessPolicy: ScheduleAccessPolicy,
 ) {
     @Transactional(readOnly = true)
@@ -60,11 +65,16 @@ class ScheduleGenerationPersistenceService(
         }
 
         val places = placeQueryRepository.findScheduleCandidates(destination)
+        val metricsByPlaceId = externalPopularityMetricRepository.findByPlaceIdIn(places.map { it.id })
+            .associateBy { it.place.id }
         val placeCandidates = places.map {
+            val metric = metricsByPlaceId[it.id]
             PlaceCandidate(
                 id = it.id,
                 name = it.name,
                 address = it.address,
+                latitude = it.latitude.toDouble(),
+                longitude = it.longitude.toDouble(),
                 category = it.category,
                 mobilityScore = it.mobilityScore,
                 photoScore = it.photoScore,
@@ -72,6 +82,9 @@ class ScheduleGenerationPersistenceService(
                 themeScore = it.themeScore,
                 metadataTags = it.metadataTags,
                 operatingHours = it.operatingHours,
+                externalPopularityScore = metric?.normalizedPopularityScore,
+                externalSignalConfidence = externalSignalConfidence(metric),
+                isRegionalBenefit = isRegionalBenefit(it.metadataTags, metric?.normalizedPopularityScore),
             )
         }
 
@@ -90,9 +103,12 @@ class ScheduleGenerationPersistenceService(
         options: List<ScheduleOptionDraft>,
         personaValidationByType: Map<ScheduleOptionType, Map<String, Any>>,
     ): SavedScheduleGeneration {
-        val room = accessPolicy.getActiveRoom(roomId)
+        val room = tripRoomRepository.findActiveByIdForUpdate(roomId, YnFlag.N)
+            ?: throw DomainException(HttpStatus.NOT_FOUND, "ROOM_NOT_FOUND", "존재하지 않는 방입니다.")
         val version = (scheduleRepository.findTopByRoomIdAndDelYnOrderByVersionDescIdDesc(room.id, YnFlag.N)?.version ?: 0) + 1
-        val saved = options.map { option ->
+        val replacementCandidates = placeQueryRepository.findScheduleCandidates(dto.destination)
+        val saved = options.map { rawOption ->
+            val option = rawOption.copy(slots = ensureUniqueSlots(rawOption.slots, replacementCandidates))
             val personaValidation = personaValidationByType[option.optionType]
             val schedule = scheduleRepository.save(
                 Schedule(
@@ -167,6 +183,56 @@ class ScheduleGenerationPersistenceService(
         }
         return SavedScheduleGeneration(version = version, options = saved)
     }
+    private fun ensureUniqueSlots(slots: List<ScheduleSlotDraft>, replacementCandidates: List<Place>): List<ScheduleSlotDraft> {
+        if (slots.isEmpty()) return slots
+
+        val candidates = replacementCandidates
+            .filter { it.delYn == YnFlag.N }
+            .distinctBy { it.id }
+        val usedPlaceIds = mutableSetOf<Long>()
+        val usedPlaceKeys = mutableSetOf<String>()
+
+        return slots.map { slot ->
+            val slotKeys = placeKeys(slot.placeName, slot.placeAddress)
+            val isDuplicate = slot.placeId in usedPlaceIds || slotKeys.any { it in usedPlaceKeys }
+            val uniqueSlot = if (isDuplicate) {
+                candidates.firstOrNull { candidate ->
+                    candidate.id !in usedPlaceIds && placeKeys(candidate.name, candidate.address).none { it in usedPlaceKeys }
+                }?.let { replacement ->
+                    slot.copy(
+                        placeId = replacement.id,
+                        placeName = replacement.name,
+                        placeAddress = replacement.address,
+                        isHiddenGem = isHiddenGem(replacement),
+                    )
+                } ?: slot
+            } else {
+                slot
+            }
+
+            usedPlaceIds.add(uniqueSlot.placeId)
+            usedPlaceKeys.addAll(placeKeys(uniqueSlot.placeName, uniqueSlot.placeAddress))
+            uniqueSlot
+        }
+    }
+
+    private fun isHiddenGem(place: Place): Boolean {
+        return place.metadataTags?.get("hiddenGem") == true ||
+            place.metadataTags?.get("populationDeclineArea") == true ||
+            place.metadataTags?.get("regionalBenefit") == true ||
+            place.metadataTags?.get("regionType") == "population_decline"
+    }
+
+    private fun placeKeys(name: String, address: String): Set<String> {
+        val normalizedName = normalizePlaceText(name)
+        val normalizedAddress = normalizePlaceText(address)
+        return setOf(normalizedName, "$normalizedName|$normalizedAddress").filter { it.isNotBlank() }.toSet()
+    }
+
+    private fun normalizePlaceText(value: String): String {
+        return value.trim().lowercase().replace(Regex("[\\s\\p{Punct}]+"), "")
+    }
+
 
     @Transactional(readOnly = true)
     fun getRoomIdForRegeneration(scheduleId: Long, userId: Long): Long {
@@ -174,6 +240,25 @@ class ScheduleGenerationPersistenceService(
         val roomId = existing.room.id
         accessPolicy.validateHost(roomId, userId)
         return roomId
+    }
+
+    private fun externalSignalConfidence(metric: com.tripsync.domain.entity.ExternalPopularityMetric?): Int {
+        if (metric == null || metric.normalizedPopularityScore == null) return 0
+        var confidence = 40
+        if (metric.naverSearchTrendScore != null) confidence += 25
+        if ((metric.googleUserRatingCount ?: 0) > 0) confidence += 25
+        if (metric.googleRating != null) confidence += 10
+        return confidence.coerceIn(0, 100)
+    }
+
+    private fun isRegionalBenefit(metadataTags: Map<String, Any>?, externalPopularityScore: Int?): Boolean {
+        val tagList = metadataTags?.get("tags") as? List<*>
+        val tagged = tagList?.any { it in listOf("hidden_gem", "population_decline", "regional_benefit") } == true ||
+            metadataTags?.get("hiddenGem") == true ||
+            metadataTags?.get("populationDeclineArea") == true ||
+            metadataTags?.get("regionalBenefit") == true ||
+            metadataTags?.get("regionType") == "population_decline"
+        return tagged || (externalPopularityScore != null && externalPopularityScore <= 35)
     }
 }
 
