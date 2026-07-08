@@ -4,6 +4,7 @@ import com.tripsync.common.dto.ApiResponse
 import mu.KotlinLogging
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
+import org.springframework.http.converter.HttpMessageNotReadableException
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.servlet.NoHandlerFoundException
 import org.springframework.web.servlet.resource.NoResourceFoundException
@@ -36,6 +37,14 @@ class GlobalExceptionHandler {
         return ResponseEntity
             .status(HttpStatus.BAD_REQUEST)
             .body(ApiResponse.error("VALIDATION_ERROR", message))
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException::class)
+    fun handleMessageNotReadableException(ex: HttpMessageNotReadableException): ResponseEntity<ApiResponse<Nothing>> {
+        logger.warn { "[INVALID_REQUEST] ${ex.message}" }
+        return ResponseEntity
+            .status(HttpStatus.BAD_REQUEST)
+            .body(ApiResponse.error("INVALID_REQUEST", "요청 본문을 읽을 수 없습니다. JSON 형식을 확인해 주세요."))
     }
 
     @ExceptionHandler(Exception::class)
