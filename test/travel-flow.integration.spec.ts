@@ -438,7 +438,7 @@ describe('Travel flow integration', () => {
     const createRoomResult = await roomService.createRoom(
       {
         destination: '충남',
-        tripDate: '2026-05-02',
+        tripDate: '2026-12-31',
       },
       users[0] as any,
     );
@@ -467,12 +467,15 @@ describe('Travel flow integration', () => {
     const roomService = new RoomService(authService as any, prisma as any);
     const tptiService = new TptiService(prisma as any);
     const conflictService = new ConflictService(authService as any, consensusService, prisma as any);
-    const scheduleService = new ScheduleService(authService as any, consensusService, prisma as any);
+    const personaValidationService = {
+      validateOptions: jest.fn().mockReturnValue(new Map()),
+    };
+    const scheduleService = new ScheduleService(authService as any, consensusService, personaValidationService as any, prisma as any);
 
     const createRoomResult = await roomService.createRoom(
       {
         destination: '충남',
-        tripDate: '2026-05-02',
+        tripDate: '2026-12-31',
       },
       users[0] as any,
     );
@@ -499,7 +502,7 @@ describe('Travel flow integration', () => {
       roomId,
       {
         destination: '충남',
-        tripDate: '2026-05-02',
+        tripDate: '2026-12-31',
         startTime: '09:00',
         endTime: '21:00',
       },

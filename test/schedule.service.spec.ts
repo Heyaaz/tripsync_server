@@ -38,7 +38,16 @@ describe('ScheduleService', () => {
     buildScheduleOptions: jest.fn(),
   };
 
-  const service = new ScheduleService(authService as any, consensusService as any, prisma as any);
+  const personaValidationService = {
+    validateOptions: jest.fn().mockReturnValue(new Map()),
+  };
+
+  const service = new ScheduleService(
+    authService as any,
+    consensusService as any,
+    personaValidationService as any,
+    prisma as any,
+  );
 
   beforeEach(() => {
     jest.clearAllMocks();
