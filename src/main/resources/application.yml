@@ -21,13 +21,13 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
+        format_sql: false
         default_batch_fetch_size: 100
         jdbc:
           batch_size: 100
           order_inserts: true
           order_updates: true
-    show-sql: true
+    show-sql: false
     open-in-view: false
 
   flyway:
@@ -56,9 +56,9 @@ server:
 
 logging:
   level:
-    com.tripsync: DEBUG
-    org.hibernate.SQL: DEBUG
-    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+    com.tripsync: INFO
+    org.hibernate.SQL: INFO
+    org.hibernate.type.descriptor.sql.BasicBinder: INFO
 
 jwt:
   secret: ${JWT_SECRET:your-256-bit-secret-key-here-for-development-only}
@@ -120,5 +120,16 @@ spring:
   jpa:
     hibernate:
       ddl-auto: create-drop
+    properties:
+      hibernate:
+        format_sql: true
+        generate_statistics: true
+    show-sql: true
   flyway:
     enabled: false
+
+logging:
+  level:
+    com.tripsync: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE

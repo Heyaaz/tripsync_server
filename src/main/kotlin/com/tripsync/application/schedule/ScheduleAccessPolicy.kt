@@ -27,12 +27,8 @@ class ScheduleAccessPolicy(
     }
 
     fun getActiveSchedule(scheduleId: Long): Schedule {
-        val schedule = scheduleRepository.findById(scheduleId)
-            .orElseThrow { DomainException(HttpStatus.NOT_FOUND, "SCHEDULE_NOT_FOUND", "일정을 찾을 수 없습니다.") }
-        if (schedule.delYn != YnFlag.N) {
-            throw DomainException(HttpStatus.NOT_FOUND, "SCHEDULE_NOT_FOUND", "일정을 찾을 수 없습니다.")
-        }
-        return schedule
+        return scheduleRepository.findByIdAndDelYn(scheduleId, YnFlag.N)
+            ?: throw DomainException(HttpStatus.NOT_FOUND, "SCHEDULE_NOT_FOUND", "일정을 찾을 수 없습니다.")
     }
 
     fun validateHost(roomId: Long, userId: Long) {

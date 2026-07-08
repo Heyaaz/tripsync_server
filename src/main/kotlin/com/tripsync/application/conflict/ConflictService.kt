@@ -26,6 +26,9 @@ class ConflictService(
 
         val room = tripRoomRepository.findById(roomId)
             .orElseThrow { DomainException(HttpStatus.NOT_FOUND, "ROOM_NOT_FOUND", "존재하지 않는 방입니다.") }
+        if (room.delYn != YnFlag.N) {
+            throw DomainException(HttpStatus.NOT_FOUND, "ROOM_NOT_FOUND", "존재하지 않는 방입니다.")
+        }
 
         val profiles = roomMemberProfileRepository.findAllByRoomIdAndDelYn(roomId, YnFlag.N)
         if (profiles.size < 2) {
@@ -54,30 +57,25 @@ class ConflictService(
             "${highMember?.nickname ?: "A님"}과 ${lowMember?.nickname ?: "B님"}은 ${axisLabel(it.axis)}에서 ${it.gap}점 차이로 충돌합니다."
         } ?: "현재 그룹은 공통 지대가 넓습니다."
 
-        val conflictMap = conflictMapRepository.save(
-            com.tripsync.domain.entity.ConflictMap(
-                room = room,
-                commonAxes = analysis.commonAxes.map { it.name.lowercase() },
-                conflictAxes = analysis.conflictAxes.map {
-                    mapOf(
-                        "axis" to it.axis.name.lowercase(),
-                        "min" to it.min,
-                        "max" to it.max,
-                        "gap" to it.gap,
-                        "severity" to it.severity.name.lowercase(),
-                        "highUserId" to it.highUserId,
-                        "lowUserId" to it.lowUserId,
-                    )
-                },
-                summaryText = summaryText,
+        val commonAxes = analysis.commonAxes.map { it.name.lowercase() }
+        val conflictAxes = analysis.conflictAxes.map {
+            mapOf(
+                "axis" to it.axis.name.lowercase(),
+                "min" to it.min,
+                "max" to it.max,
+                "gap" to it.gap,
+                "severity" to it.severity.name.lowercase(),
+                "highUserId" to it.highUserId,
+                "lowUserId" to it.lowUserId,
             )
-        )
+        }
+        val conflictMap = upsertLatestConflictMap(room.id, commonAxes, conflictAxes, summaryText)
 
         return ApiResponse.ok(
             mapOf(
                 "roomId" to roomId,
                 "conflictMapId" to conflictMap.id,
-                "commonAxes" to analysis.commonAxes.map { it.name.lowercase() },
+                "commonAxes" to commonAxes,
                 "conflictAxes" to analysis.conflictAxes.map {
                     mapOf(
                         "axis" to it.axis.name.lowercase(),
@@ -100,6 +98,35 @@ class ConflictService(
                 },
             )
         )
+    }
+
+    private fun upsertLatestConflictMap(
+        roomId: Long,
+        commonAxes: List<String>,
+        conflictAxes: List<Map<String, Any>>,
+        summaryText: String,
+    ): com.tripsync.domain.entity.ConflictMap {
+        val lockedRoom = tripRoomRepository.findLockedByIdAndDelYn(roomId, YnFlag.N)
+            ?: throw DomainException(HttpStatus.NOT_FOUND, "ROOM_NOT_FOUND", "존재하지 않는 방입니다.")
+        val activeMaps = conflictMapRepository.findAllByRoomIdAndDelYnOrderByCreatedAtDescIdDesc(roomId, YnFlag.N)
+        val latest = activeMaps.firstOrNull()
+        activeMaps.drop(1).forEach { it.delYn = YnFlag.Y }
+
+        return if (latest != null) {
+            latest.commonAxes = commonAxes
+            latest.conflictAxes = conflictAxes
+            latest.summaryText = summaryText
+            latest
+        } else {
+            conflictMapRepository.save(
+                com.tripsync.domain.entity.ConflictMap(
+                    room = lockedRoom,
+                    commonAxes = commonAxes,
+                    conflictAxes = conflictAxes,
+                    summaryText = summaryText,
+                )
+            )
+        }
     }
 
     private fun validateRoomMember(roomId: Long, userId: Long) {

@@ -13,7 +13,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.http.HttpStatus
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
 
 @ConfigurationProperties(prefix = "tourapi.sync")
@@ -34,8 +35,13 @@ class TourApiBatchService(
     private val tourApiClient: TourApiClient,
     private val placeRepository: PlaceRepository,
     private val syncProperties: TourApiSyncProperties,
+    transactionManager: PlatformTransactionManager,
 ) {
     private val logger = KotlinLogging.logger {}
+    private val writeTransaction = TransactionTemplate(transactionManager)
+    private val readOnlyTransaction = TransactionTemplate(transactionManager).apply {
+        isReadOnly = true
+    }
 
     @Scheduled(cron = "\${tourapi.sync.cron:0 0 3 * * *}")
     fun syncPlaces() {
@@ -54,46 +60,42 @@ class TourApiBatchService(
             .onFailure { logger.warn(it) { "TourAPI scheduled sync failed" } }
     }
 
-    @Transactional
     fun syncChungnamPlaces(user: User): ApiResponse<Map<String, Any?>> {
         assertAdminUser(user)
         val report = syncConfiguredAreaInternal(triggeredBy = "manual", operatorUserId = user.id)
         return ApiResponse.ok(report.toMap())
     }
 
-    @Transactional
     fun enrichChungnamPlaces(user: User, limit: Int = syncProperties.enrichLimit): ApiResponse<Map<String, Any?>> {
         assertAdminUser(user)
         val boundedLimit = limit.coerceIn(1, 200)
-        val candidates = placeRepository.findByDelYn(YnFlag.N)
-            .filter { needsDetailEnrichment(it) }
-            .take(boundedLimit)
+        val candidates = loadEnrichmentCandidates(boundedLimit)
         var enriched = 0
         var skipped = 0
         var failed = 0
         val failures = mutableListOf<Map<String, Any>>()
-        candidates.forEachIndexed { index, place ->
-            val contentTypeId = place.metadataTags?.get("contentTypeId")?.toString()
+        candidates.forEachIndexed { index, candidate ->
+            val contentTypeId = candidate.contentTypeId
             if (contentTypeId.isNullOrBlank()) {
                 skipped += 1
                 return@forEachIndexed
             }
             val result = runCatching {
-                val common = retryTourApiCall("detailCommon", place.tourApiId) {
-                    runBlocking { tourApiClient.fetchDetailCommon(place.tourApiId) }
+                val common = retryTourApiCall("detailCommon", candidate.tourApiId) {
+                    runBlocking { tourApiClient.fetchDetailCommon(candidate.tourApiId) }
                 }
-                val intro = retryTourApiCall("detailIntro", place.tourApiId) {
-                    runBlocking { tourApiClient.fetchDetailIntro(place.tourApiId, contentTypeId) }
+                val intro = retryTourApiCall("detailIntro", candidate.tourApiId) {
+                    runBlocking { tourApiClient.fetchDetailIntro(candidate.tourApiId, contentTypeId) }
                 }
-                enrichPlace(place, common, intro)
+                saveEnrichedPlace(candidate.placeId, common, intro)
             }
             if (result.isSuccess) {
-                enriched += 1
+                if (result.getOrDefault(false)) enriched += 1 else skipped += 1
             } else {
                 failed += 1
                 val error = result.exceptionOrNull()
-                logger.warn(error) { "Failed to enrich place tourApiId=${place.tourApiId}" }
-                failures += failureOf(place.tourApiId, contentTypeId, error)
+                logger.warn(error) { "Failed to enrich place tourApiId=${candidate.tourApiId}" }
+                failures += failureOf(candidate.tourApiId, contentTypeId, error)
             }
             throttleIfNeeded(index, candidates.lastIndex)
         }
@@ -108,6 +110,46 @@ class TourApiBatchService(
         )
         logger.info { "TourAPI enrich completed: $report" }
         return ApiResponse.ok(report)
+    }
+
+    private fun loadEnrichmentCandidates(limit: Int): List<TourApiEnrichmentCandidate> {
+        return readOnlyTransaction.execute {
+            val pageSize = (limit * 3).coerceIn(limit, 200)
+            val candidates = mutableListOf<TourApiEnrichmentCandidate>()
+            var afterId = 0L
+
+            while (candidates.size < limit) {
+                val page = placeRepository.findDetailEnrichmentCandidatesAfterId(afterId, pageSize)
+                if (page.isEmpty()) break
+                afterId = page.last().id
+
+                page.asSequence()
+                    .filter { needsDetailEnrichment(it) }
+                    .take(limit - candidates.size)
+                    .mapTo(candidates) {
+                        TourApiEnrichmentCandidate(
+                            placeId = it.id,
+                            tourApiId = it.tourApiId,
+                            contentTypeId = it.metadataTags?.get("contentTypeId")?.toString(),
+                        )
+                    }
+            }
+
+            candidates
+        } ?: emptyList()
+    }
+
+    private fun saveEnrichedPlace(
+        placeId: Long,
+        common: Map<String, Any?>?,
+        intro: Map<String, Any?>?,
+    ): Boolean {
+        return writeTransaction.execute {
+            val place = placeRepository.findById(placeId).orElse(null) ?: return@execute false
+            if (place.delYn != YnFlag.N || !needsDetailEnrichment(place)) return@execute false
+            enrichPlace(place, common, intro)
+            true
+        } ?: false
     }
 
     private fun needsDetailEnrichment(place: Place): Boolean {
@@ -217,27 +259,20 @@ class TourApiBatchService(
             }
 
             totalFetched += fetched.size
-            fetched.forEach { incoming ->
-                val result = runCatching {
-                    val existing = placeRepository.findByTourApiId(incoming.tourApiId)
-                    when {
-                        existing == null -> {
-                            incoming.metadataTags = operationMetadata(incoming.metadataTags, contentTypeId, markSyncedAt = true)
-                            placeRepository.save(incoming)
-                            created += 1
-                        }
-                        mergePlace(existing, incoming, contentTypeId) -> {
-                            placeRepository.save(existing)
-                            updated += 1
-                        }
-                        else -> unchanged += 1
-                    }
-                }
-                if (result.isFailure) {
-                    failed += 1
+            fetched.chunked(50).forEach { chunk ->
+                val result = runCatching { upsertPlacesChunk(contentTypeId, chunk) }
+                if (result.isSuccess) {
+                    val counts = result.getOrThrow()
+                    created += counts.created
+                    updated += counts.updated
+                    unchanged += counts.unchanged
+                    failed += counts.failed
+                    failures += counts.failures
+                } else {
                     val error = result.exceptionOrNull()
-                    logger.warn(error) { "TourAPI place upsert failed tourApiId=${incoming.tourApiId}" }
-                    failures += failureOf(incoming.tourApiId, contentTypeId, error)
+                    failed += chunk.size
+                    logger.warn(error) { "TourAPI place upsert chunk failed contentTypeId=$contentTypeId size=${chunk.size}" }
+                    failures += chunk.map { failureOf(it.tourApiId, contentTypeId, error) }
                 }
             }
             throttleIfNeeded(pageNo, syncProperties.maxPages)
@@ -253,6 +288,54 @@ class TourApiBatchService(
             failed = failed,
             failures = failures.take(20),
         )
+    }
+
+    private fun upsertPlacesChunk(contentTypeId: String, incomingPlaces: List<Place>): TourApiUpsertCounts {
+        if (incomingPlaces.isEmpty()) return TourApiUpsertCounts()
+        return writeTransaction.execute {
+            val uniqueIncomingPlaces = incomingPlaces.associateBy { it.tourApiId }.values.toList()
+            val existingByTourApiId = placeRepository.findByTourApiIdIn(uniqueIncomingPlaces.map { it.tourApiId })
+                .associateBy { it.tourApiId }
+            val toSave = mutableListOf<Place>()
+            var created = 0
+            var updated = 0
+            var unchanged = 0
+            var failed = 0
+            val failures = mutableListOf<Map<String, Any>>()
+
+            uniqueIncomingPlaces.forEach { incoming ->
+                runCatching {
+                    val existing = existingByTourApiId[incoming.tourApiId]
+                    when {
+                        existing == null -> {
+                            incoming.metadataTags = operationMetadata(incoming.metadataTags, contentTypeId, markSyncedAt = true)
+                            toSave += incoming
+                            created += 1
+                        }
+                        mergePlace(existing, incoming, contentTypeId) -> {
+                            toSave += existing
+                            updated += 1
+                        }
+                        else -> unchanged += 1
+                    }
+                }.onFailure { error ->
+                    failed += 1
+                    logger.warn(error) { "TourAPI place upsert failed tourApiId=${incoming.tourApiId}" }
+                    failures += failureOf(incoming.tourApiId, contentTypeId, error)
+                }
+            }
+
+            if (toSave.isNotEmpty()) {
+                placeRepository.saveAll(toSave)
+            }
+            TourApiUpsertCounts(
+                created = created,
+                updated = updated,
+                unchanged = unchanged,
+                failed = failed,
+                failures = failures,
+            )
+        } ?: TourApiUpsertCounts()
     }
 
     private fun <T> retryTourApiCall(operation: String, target: String, block: () -> T): T {
@@ -389,3 +472,17 @@ data class TourApiContentTypeReport(
         "failures" to failures,
     )
 }
+
+private data class TourApiEnrichmentCandidate(
+    val placeId: Long,
+    val tourApiId: String,
+    val contentTypeId: String?,
+)
+
+private data class TourApiUpsertCounts(
+    val created: Int = 0,
+    val updated: Int = 0,
+    val unchanged: Int = 0,
+    val failed: Int = 0,
+    val failures: List<Map<String, Any>> = emptyList(),
+)

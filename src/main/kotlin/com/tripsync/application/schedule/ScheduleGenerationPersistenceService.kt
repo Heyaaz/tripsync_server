@@ -91,7 +91,7 @@ class ScheduleGenerationPersistenceService(
         personaValidationByType: Map<ScheduleOptionType, Map<String, Any>>,
     ): SavedScheduleGeneration {
         val room = accessPolicy.getActiveRoom(roomId)
-        val version = (scheduleRepository.findTopByRoomIdAndDelYnOrderByVersionDesc(room.id, YnFlag.N)?.version ?: 0) + 1
+        val version = (scheduleRepository.findTopByRoomIdAndDelYnOrderByVersionDescIdDesc(room.id, YnFlag.N)?.version ?: 0) + 1
         val saved = options.map { option ->
             val personaValidation = personaValidationByType[option.optionType]
             val schedule = scheduleRepository.save(

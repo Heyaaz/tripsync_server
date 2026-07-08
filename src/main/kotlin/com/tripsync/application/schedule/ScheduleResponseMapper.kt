@@ -3,14 +3,13 @@ package com.tripsync.application.schedule
 import com.tripsync.application.consensus.ScheduleOptionDraft
 import com.tripsync.domain.entity.Place
 import com.tripsync.domain.entity.Schedule
+import com.tripsync.domain.entity.ScheduleSlot
+import com.tripsync.domain.entity.SatisfactionScore
 import com.tripsync.domain.enums.YnFlag
-import com.tripsync.domain.repository.RoomMemberProfileRepository
 import org.springframework.stereotype.Component
 
 @Component
-class ScheduleResponseMapper(
-    private val roomMemberProfileRepository: RoomMemberProfileRepository,
-) {
+class ScheduleResponseMapper {
     fun formatGeneratedOption(
         scheduleId: Long,
         option: ScheduleOptionDraft,
@@ -54,9 +53,12 @@ class ScheduleResponseMapper(
         },
     )
 
-    fun formatStoredSchedule(schedule: Schedule): Map<String, Any?> {
-        val memberNicknames = roomMemberProfileRepository.findAllByRoomIdAndDelYn(schedule.room.id, YnFlag.N)
-            .associate { it.user.id to it.user.nickname }
+    fun formatStoredSchedule(
+        schedule: Schedule,
+        memberNicknames: Map<Long, String>,
+        slots: List<ScheduleSlot>,
+        satisfactionScores: List<SatisfactionScore>,
+    ): Map<String, Any?> {
         val llmMetadata = formatLlmMetadata(schedule)
         return mapOf(
             "id" to schedule.id,
@@ -74,7 +76,7 @@ class ScheduleResponseMapper(
             "llmLatencyMs" to llmMetadata["latencyMs"],
             "fallbackUsed" to llmMetadata["fallbackUsed"],
             "llmFallbackReason" to llmMetadata["fallbackReason"],
-            "slots" to schedule.slots.filter { it.delYn == YnFlag.N }.sortedBy { slot -> slot.orderIndex }.map { slot ->
+            "slots" to slots.filter { it.delYn == YnFlag.N }.sortedBy { slot -> slot.orderIndex }.map { slot ->
                 mapOf(
                     "slotId" to slot.id,
                     "orderIndex" to slot.orderIndex,
@@ -89,7 +91,7 @@ class ScheduleResponseMapper(
                     "place" to formatPlace(slot.place, slot.place.id, slot.place.name, slot.place.address),
                 )
             },
-            "satisfactionByUser" to schedule.satisfactionScores.filter { it.delYn == YnFlag.N }.map { score ->
+            "satisfactionByUser" to satisfactionScores.filter { it.delYn == YnFlag.N }.map { score ->
                 mapOf(
                     "userId" to score.user.id,
                     "nickname" to memberNicknames[score.user.id],
@@ -99,7 +101,12 @@ class ScheduleResponseMapper(
         )
     }
 
-    fun formatPublicShareSchedule(schedule: Schedule): Map<String, Any?> {
+    fun formatPublicShareSchedule(
+        schedule: Schedule,
+        memberNicknames: Map<Long, String>,
+        slots: List<ScheduleSlot>,
+        satisfactionScores: List<SatisfactionScore>,
+    ): Map<String, Any?> {
         val publicKeys = setOf(
             "id",
             "roomId",
@@ -114,7 +121,7 @@ class ScheduleResponseMapper(
             "slots",
             "satisfactionByUser",
         )
-        return formatStoredSchedule(schedule).filterKeys { it in publicKeys }
+        return formatStoredSchedule(schedule, memberNicknames, slots, satisfactionScores).filterKeys { it in publicKeys }
     }
 
     @Suppress("UNCHECKED_CAST")

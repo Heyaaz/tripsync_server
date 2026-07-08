@@ -30,6 +30,7 @@ class ScheduleService(
     private val personaValidationService: PersonaValidationService,
     private val accessPolicy: ScheduleAccessPolicy,
     private val responseMapper: ScheduleResponseMapper,
+    private val scheduleReadAssembler: ScheduleReadAssembler,
 ) {
     private val logger = KotlinLogging.logger {}
 
@@ -79,15 +80,15 @@ class ScheduleService(
     fun getSchedule(scheduleId: Long, userId: Long): ApiResponse<Map<String, Any?>> {
         val schedule = accessPolicy.getActiveSchedule(scheduleId)
         accessPolicy.validateRoomMember(schedule.room.id, userId)
-        return ApiResponse.ok(responseMapper.formatStoredSchedule(schedule))
+        return ApiResponse.ok(scheduleReadAssembler.formatStoredSchedule(schedule))
     }
 
     @Transactional(readOnly = true)
     fun getConfirmedSchedule(roomId: Long, userId: Long): ApiResponse<Map<String, Any?>> {
         accessPolicy.validateRoomMember(roomId, userId)
-        val schedule = scheduleRepository.findConfirmedByRoomId(roomId, YnFlag.N).firstOrNull()
+        val schedule = scheduleRepository.findTopByRoomIdAndDelYnAndIsConfirmedTrueOrderByVersionDescIdDesc(roomId, YnFlag.N)
             ?: throw DomainException(HttpStatus.NOT_FOUND, "SCHEDULE_NOT_FOUND", "확정된 일정이 없습니다.")
-        return ApiResponse.ok(responseMapper.formatStoredSchedule(schedule))
+        return ApiResponse.ok(scheduleReadAssembler.formatStoredSchedule(schedule))
     }
 
 
@@ -157,7 +158,7 @@ class ScheduleService(
         )
         redistributeSlotsWithinScheduleWindow(schedule, orderedSlots + newSlot)
 
-        return ApiResponse.ok(responseMapper.formatStoredSchedule(schedule))
+        return ApiResponse.ok(scheduleReadAssembler.formatStoredSchedule(schedule))
     }
 
     @Transactional
@@ -176,21 +177,20 @@ class ScheduleService(
             slotsById.getValue(slotId).orderIndex = index + 1
         }
 
-        return ApiResponse.ok(responseMapper.formatStoredSchedule(schedule))
+        return ApiResponse.ok(scheduleReadAssembler.formatStoredSchedule(schedule))
     }
 
     @Transactional
     fun confirmSchedule(roomId: Long, hostId: Long, optionType: String): ApiResponse<Map<String, Any?>> {
         accessPolicy.validateHost(roomId, hostId)
         val type = parseOptionType(optionType)
-        val latest = scheduleRepository.findTopByRoomIdAndDelYnOrderByVersionDesc(roomId, YnFlag.N)
+        val latest = scheduleRepository.findTopByRoomIdAndDelYnOrderByVersionDescIdDesc(roomId, YnFlag.N)
             ?: throw DomainException(HttpStatus.NOT_FOUND, "SCHEDULE_NOT_FOUND", "확정할 일정 옵션이 없습니다.")
-        val target = scheduleRepository.findByRoomIdAndDelYn(roomId, YnFlag.N)
-            .firstOrNull { it.version == latest.version && it.optionType == type }
+        val target = scheduleRepository.findByRoomIdAndDelYnAndVersionAndOptionType(roomId, YnFlag.N, latest.version, type)
             ?: throw DomainException(HttpStatus.NOT_FOUND, "SCHEDULE_NOT_FOUND", "선택한 일정 옵션을 찾을 수 없습니다.")
 
-        scheduleRepository.findByRoomIdAndDelYn(roomId, YnFlag.N).forEach { it.isConfirmed = false }
-        target.isConfirmed = true
+        scheduleRepository.clearConfirmedByRoomId(roomId, YnFlag.N)
+        scheduleRepository.markConfirmed(target.id, YnFlag.N)
         target.room.status = com.tripsync.domain.enums.TripRoomStatus.COMPLETED
 
         return ApiResponse.ok(
@@ -233,7 +233,7 @@ class ScheduleService(
     @Transactional(readOnly = true)
     fun getPublicShareSchedule(scheduleId: Long): ApiResponse<Map<String, Any?>> {
         val schedule = accessPolicy.getActiveSchedule(scheduleId)
-        return ApiResponse.ok(responseMapper.formatPublicShareSchedule(schedule))
+        return ApiResponse.ok(scheduleReadAssembler.formatPublicShareSchedule(schedule))
     }
 
     private fun safePersonaValidationByType(
