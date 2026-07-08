@@ -24,6 +24,35 @@ class ScheduleReadAssembler(
         )
     }
 
+    fun formatStoredSchedules(schedules: List<Schedule>): Map<Long, Map<String, Any?>> {
+        if (schedules.isEmpty()) return emptyMap()
+
+        val memberNicknamesByRoomId = schedules
+            .map { it.room.id }
+            .distinct()
+            .associateWith { roomId ->
+                roomMemberProfileRepository.findMemberNicknamesByRoomId(roomId, YnFlag.N)
+                    .associate { it.getUserId() to it.getNickname() }
+            }
+        val scheduleIds = schedules.map { it.id }
+        val slotsByScheduleId = scheduleSlotRepository
+            .findAllByScheduleIdInAndDelYnOrderByScheduleIdAscOrderIndexAsc(scheduleIds, YnFlag.N)
+            .groupBy { it.schedule.id }
+        val scoresByScheduleId = satisfactionScoreRepository
+            .findAllByScheduleIdInAndDelYn(scheduleIds, YnFlag.N)
+            .groupBy { it.schedule.id }
+
+        val memberNicknamesByScheduleId = schedules.associate { schedule ->
+            schedule.id to memberNicknamesByRoomId[schedule.room.id].orEmpty()
+        }
+        return responseMapper.formatStoredSchedules(
+            schedules = schedules,
+            memberNicknamesByScheduleId = memberNicknamesByScheduleId,
+            slotsByScheduleId = slotsByScheduleId,
+            satisfactionScoresByScheduleId = scoresByScheduleId,
+        )
+    }
+
     fun formatPublicShareSchedule(schedule: Schedule): Map<String, Any?> {
         val details = loadDetails(schedule)
         return responseMapper.formatPublicShareSchedule(

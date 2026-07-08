@@ -10,5 +10,9 @@ import org.springframework.stereotype.Repository
 interface SatisfactionScoreRepository : JpaRepository<SatisfactionScore, Long> {
     @EntityGraph(attributePaths = ["user"])
     fun findAllByScheduleIdAndDelYn(scheduleId: Long, delYn: YnFlag): List<SatisfactionScore>
+
+    @EntityGraph(attributePaths = ["user"])
+    fun findAllByScheduleIdInAndDelYn(scheduleIds: Collection<Long>, delYn: YnFlag): List<SatisfactionScore>
+
     fun findAllByScheduleRoomIdAndUserIdAndDelYn(roomId: Long, userId: Long, delYn: YnFlag): List<SatisfactionScore>
 }
