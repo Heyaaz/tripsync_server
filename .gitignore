@@ -34,3 +34,5 @@ application-prod.yml
 *~
 
 node_modules/
+
+.kotlin/
