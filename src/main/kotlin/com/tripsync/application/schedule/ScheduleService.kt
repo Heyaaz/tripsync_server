@@ -18,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional
 import java.time.Duration
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.concurrent.TimeUnit
 
 @Service
 class ScheduleService(
@@ -35,49 +36,81 @@ class ScheduleService(
     private val logger = KotlinLogging.logger {}
 
     fun generateSchedule(roomId: Long, hostId: Long, dto: GenerateScheduleDto): ApiResponse<Map<String, Any?>> {
-        val generationContext = generationPersistenceService.loadGenerationContext(roomId, hostId, dto.destination)
-        val members = generationContext.members
-        val placesById = generationContext.placesById
+        val totalStartNanos = System.nanoTime()
+        var contextLoadMs = 0L
+        var consensusMs = 0L
+        var validationMs = 0L
+        var persistenceMs = 0L
+        var optionCount = 0
+        var status = "success"
 
-        val recentPlaceIds = latestGeneratedPlaceIds(roomId)
-        val context = OptionContext(
-            roomId = roomId,
-            destination = dto.destination,
-            tripDate = dto.tripStartDate ?: dto.tripDate,
-            tripEndDate = dto.tripEndDate ?: dto.tripStartDate ?: dto.tripDate,
-            startTime = dto.startTime,
-            endTime = dto.endTime,
-            members = members,
-            places = generationContext.places,
-            recentPlaceIds = recentPlaceIds,
-            diversitySalt = System.nanoTime(),
-        )
+        try {
+            val contextStartNanos = System.nanoTime()
+            val generationContext = generationPersistenceService.loadGenerationContext(roomId, hostId, dto.destination)
+            contextLoadMs = elapsedMillis(contextStartNanos)
+            val members = generationContext.members
+            val placesById = generationContext.placesById
 
-        val options = runBlocking { consensusService.buildScheduleOptions(context) }
-        val personaValidationByType = safePersonaValidationByType(options, members, placesById)
-        val savedGeneration = generationPersistenceService.saveGeneratedOptions(
-            roomId = roomId,
-            dto = dto,
-            options = options,
-            personaValidationByType = personaValidationByType,
-        )
-
-        val memberNicknames = members.associate { it.userId to it.nickname }
-        return ApiResponse.ok(
-            mapOf(
-                "roomId" to roomId,
-                "version" to savedGeneration.version,
-                "options" to savedGeneration.options.map { saved ->
-                    responseMapper.formatGeneratedOption(
-                        scheduleId = saved.scheduleId,
-                        option = saved.option,
-                        personaValidation = saved.personaValidation,
-                        memberNicknames = memberNicknames,
-                        placesById = placesById,
-                    )
-                },
+            val recentPlaceIds = latestGeneratedPlaceIds(roomId)
+            val context = OptionContext(
+                roomId = roomId,
+                destination = dto.destination,
+                tripDate = dto.tripStartDate ?: dto.tripDate,
+                tripEndDate = dto.tripEndDate ?: dto.tripStartDate ?: dto.tripDate,
+                startTime = dto.startTime,
+                endTime = dto.endTime,
+                members = members,
+                places = generationContext.places,
+                recentPlaceIds = recentPlaceIds,
+                diversitySalt = System.nanoTime(),
             )
-        )
+
+            val consensusStartNanos = System.nanoTime()
+            val options = runBlocking { consensusService.buildScheduleOptions(context) }
+            consensusMs = elapsedMillis(consensusStartNanos)
+            optionCount = options.size
+
+            val validationStartNanos = System.nanoTime()
+            val personaValidationByType = safePersonaValidationByType(options, members, placesById)
+            validationMs = elapsedMillis(validationStartNanos)
+
+            val persistenceStartNanos = System.nanoTime()
+            val savedGeneration = generationPersistenceService.saveGeneratedOptions(
+                roomId = roomId,
+                dto = dto,
+                options = options,
+                personaValidationByType = personaValidationByType,
+            )
+            persistenceMs = elapsedMillis(persistenceStartNanos)
+
+            val memberNicknames = members.associate { it.userId to it.nickname }
+            return ApiResponse.ok(
+                mapOf(
+                    "roomId" to roomId,
+                    "version" to savedGeneration.version,
+                    "options" to savedGeneration.options.map { saved ->
+                        responseMapper.formatGeneratedOption(
+                            scheduleId = saved.scheduleId,
+                            option = saved.option,
+                            personaValidation = saved.personaValidation,
+                            memberNicknames = memberNicknames,
+                            placesById = placesById,
+                        )
+                    },
+                )
+            )
+        } catch (error: Exception) {
+            status = "failed"
+            throw error
+        } finally {
+            logger.info {
+                "schedule_generation_timing status=$status optionCount=$optionCount totalMs=${elapsedMillis(totalStartNanos)} contextLoadMs=$contextLoadMs consensusMs=$consensusMs validationMs=$validationMs persistenceMs=$persistenceMs"
+            }
+        }
+    }
+
+    private fun elapsedMillis(startNanos: Long): Long {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos).coerceAtLeast(0)
     }
 
 

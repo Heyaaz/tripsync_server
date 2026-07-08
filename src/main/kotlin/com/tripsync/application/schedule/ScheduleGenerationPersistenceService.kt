@@ -10,6 +10,7 @@ import com.tripsync.domain.entity.Place
 import com.tripsync.domain.entity.SatisfactionScore
 import com.tripsync.domain.entity.Schedule
 import com.tripsync.domain.entity.ScheduleSlot
+import com.tripsync.domain.entity.User
 import com.tripsync.domain.enums.ScheduleOptionType
 import com.tripsync.domain.enums.TripRoomStatus
 import com.tripsync.domain.enums.YnFlag
@@ -107,8 +108,17 @@ class ScheduleGenerationPersistenceService(
             ?: throw DomainException(HttpStatus.NOT_FOUND, "ROOM_NOT_FOUND", "존재하지 않는 방입니다.")
         val version = (scheduleRepository.findTopByRoomIdAndDelYnOrderByVersionDescIdDesc(room.id, YnFlag.N)?.version ?: 0) + 1
         val replacementCandidates = placeQueryRepository.findScheduleCandidates(dto.destination)
-        val saved = options.map { rawOption ->
-            val option = rawOption.copy(slots = ensureUniqueSlots(rawOption.slots, replacementCandidates))
+        val repairedOptions = options.map { rawOption ->
+            rawOption.copy(slots = ensureUniqueSlots(rawOption.slots, replacementCandidates))
+        }
+        val placesById = loadActivePlacesById(repairedOptions.flatMap { option -> option.slots.map { it.placeId } })
+        val usersById = loadUsersById(
+            repairedOptions.flatMap { option ->
+                option.slots.mapNotNull { it.targetUserId } + option.satisfactionByUser.map { it.userId }
+            }
+        )
+
+        val saved = repairedOptions.map { option ->
             val personaValidation = personaValidationByType[option.optionType]
             val schedule = scheduleRepository.save(
                 Schedule(
@@ -137,32 +147,28 @@ class ScheduleGenerationPersistenceService(
                 )
             )
 
-            option.slots.forEach { slot ->
-                val place = placeRepository.findById(slot.placeId)
-                    .orElseThrow { DomainException(HttpStatus.NOT_FOUND, "PLACE_NOT_FOUND", "장소를 찾을 수 없습니다.") }
-                if (place.delYn != YnFlag.N) {
-                    throw DomainException(HttpStatus.NOT_FOUND, "PLACE_NOT_FOUND", "장소를 찾을 수 없습니다.")
-                }
-                val targetUser = slot.targetUserId?.let { userRepository.findById(it).orElse(null) }
-                scheduleSlotRepository.save(
+            scheduleSlotRepository.saveAll(
+                option.slots.map { slot ->
+                    val place = placesById[slot.placeId]
+                        ?: throw DomainException(HttpStatus.NOT_FOUND, "PLACE_NOT_FOUND", "장소를 찾을 수 없습니다.")
                     ScheduleSlot(
                         schedule = schedule,
                         startTime = slot.startTime,
                         endTime = slot.endTime,
                         place = place,
                         slotType = slot.slotType,
-                        targetUser = targetUser,
+                        targetUser = slot.targetUserId?.let { usersById[it] },
                         reasonAxis = slot.reasonAxis,
                         reasonText = slot.reasonText,
                         orderIndex = slot.orderIndex,
                     )
-                )
-            }
+                }
+            )
 
-            option.satisfactionByUser.forEach { sat ->
-                val user = userRepository.findById(sat.userId)
-                    .orElseThrow { DomainException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다: ${sat.userId}") }
-                satisfactionScoreRepository.save(
+            satisfactionScoreRepository.saveAll(
+                option.satisfactionByUser.map { sat ->
+                    val user = usersById[sat.userId]
+                        ?: throw DomainException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다: ${sat.userId}")
                     SatisfactionScore(
                         schedule = schedule,
                         user = user,
@@ -172,8 +178,8 @@ class ScheduleGenerationPersistenceService(
                             "byAxis" to sat.breakdown.byAxis.mapKeys { it.key.name.lowercase() },
                         ),
                     )
-                )
-            }
+                }
+            )
 
             SavedScheduleOption(
                 scheduleId = schedule.id,
@@ -183,6 +189,24 @@ class ScheduleGenerationPersistenceService(
         }
         return SavedScheduleGeneration(version = version, options = saved)
     }
+    private fun loadActivePlacesById(placeIds: List<Long>): Map<Long, Place> {
+        val uniqueIds = placeIds.distinct()
+        if (uniqueIds.isEmpty()) return emptyMap()
+        val placesById = placeRepository.findAllById(uniqueIds)
+            .filter { it.delYn == YnFlag.N }
+            .associateBy { it.id }
+        if (placesById.size != uniqueIds.size) {
+            throw DomainException(HttpStatus.NOT_FOUND, "PLACE_NOT_FOUND", "장소를 찾을 수 없습니다.")
+        }
+        return placesById
+    }
+
+    private fun loadUsersById(userIds: List<Long>): Map<Long, User> {
+        val uniqueIds = userIds.distinct()
+        if (uniqueIds.isEmpty()) return emptyMap()
+        return userRepository.findAllById(uniqueIds).associateBy { it.id }
+    }
+
     private fun ensureUniqueSlots(slots: List<ScheduleSlotDraft>, replacementCandidates: List<Place>): List<ScheduleSlotDraft> {
         if (slots.isEmpty()) return slots
 
@@ -205,7 +229,11 @@ class ScheduleGenerationPersistenceService(
                         placeAddress = replacement.address,
                         isHiddenGem = isHiddenGem(replacement),
                     )
-                } ?: slot
+                } ?: throw DomainException(
+                    HttpStatus.UNPROCESSABLE_ENTITY,
+                    "INSUFFICIENT_UNIQUE_PLACES",
+                    "중복 장소를 대체할 수 있는 후보가 부족합니다.",
+                )
             } else {
                 slot
             }

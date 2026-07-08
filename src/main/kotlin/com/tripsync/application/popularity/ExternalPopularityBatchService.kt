@@ -14,6 +14,7 @@ import com.tripsync.infrastructure.popularity.GooglePlacesClient
 import com.tripsync.infrastructure.popularity.NaverDataLabClient
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
+import org.springframework.data.domain.PageRequest
 import org.springframework.http.HttpStatus
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
@@ -61,7 +62,7 @@ class ExternalPopularityBatchService(
     private fun syncInternal(triggeredBy: String, operatorUserId: Long?, limitOverride: Int? = null): ExternalPopularitySyncReport {
         val startedAt = Instant.now()
         val limit = (limitOverride ?: properties.sync.batchLimit).coerceAtLeast(1)
-        val places = placeRepository.findByDelYn(YnFlag.N).take(limit)
+        val places = placeRepository.findByDelYn(YnFlag.N, PageRequest.of(0, limit))
         val rawResults = mutableListOf<ExternalPopularityRawResult>()
 
         places.forEachIndexed { index, place ->

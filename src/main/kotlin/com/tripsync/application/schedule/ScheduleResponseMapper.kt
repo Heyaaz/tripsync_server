@@ -69,9 +69,47 @@ class ScheduleResponseMapper(
         slots: List<ScheduleSlot>,
         satisfactionScores: List<SatisfactionScore>,
     ): Map<String, Any?> {
-        val llmMetadata = formatLlmMetadata(schedule)
         val activeSlots = slots.filter { it.delYn == YnFlag.N }.sortedBy { slot -> slot.orderIndex }
-        val metricsByPlaceId = loadMetricsByPlaceId(activeSlots.map { it.place.id })
+        return formatStoredSchedule(
+            schedule = schedule,
+            memberNicknames = memberNicknames,
+            activeSlots = activeSlots,
+            satisfactionScores = satisfactionScores,
+            metricsByPlaceId = loadMetricsByPlaceId(activeSlots.map { it.place.id }),
+        )
+    }
+
+    fun formatStoredSchedules(
+        schedules: List<Schedule>,
+        memberNicknamesByScheduleId: Map<Long, Map<Long, String>>,
+        slotsByScheduleId: Map<Long, List<ScheduleSlot>>,
+        satisfactionScoresByScheduleId: Map<Long, List<SatisfactionScore>>,
+    ): Map<Long, Map<String, Any?>> {
+        val activeSlotsByScheduleId = schedules.associate { schedule ->
+            schedule.id to slotsByScheduleId[schedule.id].orEmpty()
+                .filter { it.delYn == YnFlag.N }
+                .sortedBy { slot -> slot.orderIndex }
+        }
+        val metricsByPlaceId = loadMetricsByPlaceId(activeSlotsByScheduleId.values.flatten().map { it.place.id })
+        return schedules.associate { schedule ->
+            schedule.id to formatStoredSchedule(
+                schedule = schedule,
+                memberNicknames = memberNicknamesByScheduleId[schedule.id].orEmpty(),
+                activeSlots = activeSlotsByScheduleId[schedule.id].orEmpty(),
+                satisfactionScores = satisfactionScoresByScheduleId[schedule.id].orEmpty(),
+                metricsByPlaceId = metricsByPlaceId,
+            )
+        }
+    }
+
+    private fun formatStoredSchedule(
+        schedule: Schedule,
+        memberNicknames: Map<Long, String>,
+        activeSlots: List<ScheduleSlot>,
+        satisfactionScores: List<SatisfactionScore>,
+        metricsByPlaceId: Map<Long, ExternalPopularityMetric>,
+    ): Map<String, Any?> {
+        val llmMetadata = formatLlmMetadata(schedule)
         return mapOf(
             "id" to schedule.id,
             "shareToken" to schedule.shareToken,

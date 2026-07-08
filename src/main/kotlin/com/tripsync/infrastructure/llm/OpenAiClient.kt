@@ -32,7 +32,7 @@ class OpenAiClient(
     private val meterRegistry: MeterRegistry,
 ) {
     private val logger = KotlinLogging.logger {}
-    private val providerName: String
+    val providerName: String
         get() = "openai/$model"
 
     suspend fun refineSchedule(

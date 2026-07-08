@@ -7,9 +7,12 @@ import com.tripsync.domain.enums.ReasonAxis
 import com.tripsync.domain.enums.ScheduleOptionType
 import com.tripsync.domain.enums.ScoreAxis
 import com.tripsync.domain.enums.SlotType
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeout
 import mu.KotlinLogging
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import java.time.Instant
@@ -19,6 +22,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -29,6 +33,8 @@ import kotlin.math.sqrt
 @Service
 class ConsensusService(
     private val llmService: LlmService,
+    @Value("\${openai.refinement-timeout-seconds:3}")
+    private val refinementTimeoutSeconds: Long = 3,
 ) {
     private val logger = KotlinLogging.logger {}
 
@@ -627,16 +633,34 @@ class ConsensusService(
         analysis: GroupAnalysis,
         context: OptionContext,
     ): ScheduleOptionDraft {
-        val llmAttempt = llmService.refineScheduleOption(
-            optionType = prepared.optionType,
-            label = prepared.label,
-            summary = prepared.summary,
-            room = RoomRef(roomId = context.roomId, destination = context.destination, tripDate = context.tripDate),
-            commonAxes = analysis.commonAxes,
-            priorityAxes = analysis.priorityAxes,
-            members = members.map { MemberRef(it.userId, it.nickname) },
-            slotPlan = prepared.shortlistedPerSlot,
-        )
+        val startNanos = System.nanoTime()
+        val llmAttempt = try {
+            withTimeout(refinementTimeoutMillis()) {
+                llmService.refineScheduleOption(
+                    optionType = prepared.optionType,
+                    label = prepared.label,
+                    summary = prepared.summary,
+                    room = RoomRef(roomId = context.roomId, destination = context.destination, tripDate = context.tripDate),
+                    commonAxes = analysis.commonAxes,
+                    priorityAxes = analysis.priorityAxes,
+                    members = members.map { MemberRef(it.userId, it.nickname) },
+                    slotPlan = prepared.shortlistedPerSlot,
+                )
+            }
+        } catch (e: TimeoutCancellationException) {
+            val latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos).coerceAtLeast(0)
+            logger.warn(e) {
+                "schedule_option_refinement_timeout roomId=${context.roomId} optionType=${prepared.optionType} budgetMs=${refinementTimeoutMillis()} latencyMs=$latencyMs fallbackReason=${LlmService.FallbackReason.API_CALL_FAILED.code}"
+            }
+            LlmService.RefinementAttempt(
+                result = null,
+                attemptedProvider = llmService.attemptedProvider,
+                latencyMs = latencyMs.toLong(),
+                fallbackUsed = true,
+                fallbackReason = LlmService.FallbackReason.API_CALL_FAILED,
+                failureDetail = "refinement budget exceeded (${refinementTimeoutMillis()}ms)",
+            )
+        }
         val llmRefined = llmAttempt.result
 
         val finalSummary = llmRefined?.summary ?: prepared.summary
@@ -688,6 +712,8 @@ class ConsensusService(
             llmFallbackReason = llmAttempt.fallbackReason?.code,
         )
     }
+
+    private fun refinementTimeoutMillis(): Long = refinementTimeoutSeconds.coerceAtLeast(1) * 1_000
 
     private fun resolveCrossOptionPlaceCollisions(
         options: List<ScheduleOptionDraft>,

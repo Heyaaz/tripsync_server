@@ -15,6 +15,12 @@ interface ScheduleSlotRepository : JpaRepository<ScheduleSlot, Long> {
     @EntityGraph(attributePaths = ["place", "targetUser"])
     fun findAllByScheduleIdAndDelYnOrderByOrderIndexAsc(scheduleId: Long, delYn: YnFlag): List<ScheduleSlot>
 
+    @EntityGraph(attributePaths = ["place", "targetUser"])
+    fun findAllByScheduleIdInAndDelYnOrderByScheduleIdAscOrderIndexAsc(
+        scheduleIds: Collection<Long>,
+        delYn: YnFlag,
+    ): List<ScheduleSlot>
+
     @Query("select slot.place.id from ScheduleSlot slot where slot.schedule.id = :scheduleId and slot.delYn = :delYn")
     fun findActivePlaceIdsByScheduleId(scheduleId: Long, delYn: YnFlag = YnFlag.N): List<Long>
 }

@@ -7,6 +7,7 @@ import com.tripsync.domain.entity.AxisScores
 import com.tripsync.domain.enums.ScheduleOptionType
 import com.tripsync.infrastructure.llm.OpenAiClient
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -96,6 +97,37 @@ class ConsensusServiceTest {
         assertEquals(3, options.size)
         assertTrue(options.all { it.fallbackUsed })
         assertTrue(elapsedMillis < 2_500, "three LLM refinements should wait once in parallel instead of timing out sequentially")
+    }
+
+    @Test
+    fun `one slow llm refinement falls back while sibling options remain successful`() = runBlocking {
+        val partialTimeoutConsensusService = ConsensusService(partialTimeoutLlmService(), refinementTimeoutSeconds = 1)
+
+        val options = partialTimeoutConsensusService.buildScheduleOptions(
+            context(
+                destination = "공주시",
+                startTime = "09:00",
+                endTime = "12:00",
+                members = members(2),
+                places = places("충청남도 공주시"),
+            )
+        )
+
+        assertEquals(3, options.size)
+        val fallbackOption = options.single { it.optionType == ScheduleOptionType.DISCOVERY }
+        val successfulOptions = options.filter { it.optionType != ScheduleOptionType.DISCOVERY }
+
+        assertTrue(fallbackOption.fallbackUsed)
+        assertEquals("api_call_failed", fallbackOption.llmFallbackReason)
+        assertEquals("deterministic-consensus", fallbackOption.llmProvider)
+        assertEquals(2, successfulOptions.size)
+        successfulOptions.forEach { option ->
+            assertEquals("test/partial-timeout-llm", option.llmProvider)
+            assertEquals("test/partial-timeout-llm", option.llmAttemptedProvider)
+            assertEquals(false, option.fallbackUsed)
+            assertEquals(null, option.llmFallbackReason)
+            assertTrue(option.slots.all { it.reasonText == "LLM 성공 보정" })
+        }
     }
 
     @Test
@@ -376,6 +408,54 @@ class ConsensusServiceTest {
                         slots = refinedSlots,
                     ),
                     attemptedProvider = "test/duplicate-llm",
+                    latencyMs = 1,
+                    fallbackUsed = false,
+                    fallbackReason = null,
+                )
+            }
+        }
+    }
+
+    private fun partialTimeoutLlmService(): LlmService {
+        val client = OpenAiClient(
+            webClient = WebClient.create(),
+            objectMapper = ObjectMapper(),
+            apiKey = "",
+            model = "gpt-test",
+            meterRegistry = SimpleMeterRegistry(),
+        )
+        return object : LlmService(client) {
+            override val attemptedProvider: String
+                get() = "test/partial-timeout-llm"
+
+            override suspend fun refineScheduleOption(
+                optionType: ScheduleOptionType,
+                label: String,
+                summary: String,
+                room: ConsensusService.RoomRef,
+                commonAxes: List<com.tripsync.domain.enums.ScoreAxis>,
+                priorityAxes: List<com.tripsync.domain.enums.ScoreAxis>,
+                members: List<ConsensusService.MemberRef>,
+                slotPlan: List<ConsensusService.SlotShortlist>,
+            ): RefinementAttempt {
+                if (optionType == ScheduleOptionType.DISCOVERY) {
+                    delay(2_000)
+                }
+
+                return RefinementAttempt(
+                    result = RefinementResult(
+                        summary = "$label LLM 보정 요약",
+                        provider = "test/partial-timeout-llm",
+                        latencyMs = 1,
+                        slots = slotPlan.map { slot ->
+                            RefinedSlot(
+                                orderIndex = slot.orderIndex,
+                                placeId = slot.candidatePlaces.first().id,
+                                reason = "LLM 성공 보정",
+                            )
+                        },
+                    ),
+                    attemptedProvider = "test/partial-timeout-llm",
                     latencyMs = 1,
                     fallbackUsed = false,
                     fallbackReason = null,

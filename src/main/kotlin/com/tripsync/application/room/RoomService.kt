@@ -5,7 +5,6 @@ import com.tripsync.common.dto.ApiResponse
 import com.tripsync.common.exception.DomainException
 import com.tripsync.domain.entity.RoomMember
 import com.tripsync.domain.entity.RoomMemberProfile
-import com.tripsync.domain.entity.Schedule
 import com.tripsync.domain.entity.TripRoom
 import com.tripsync.domain.entity.User
 import com.tripsync.domain.enums.RoomMemberRole
@@ -345,16 +344,18 @@ class RoomService(
             ?.let { version -> scheduleRepository.findAllByRoomIdAndDelYnAndVersion(room.id, YnFlag.N, version) }
             ?.sortedBy { it.optionType.ordinal }
             .orEmpty()
+        val schedulesToFormat = (listOfNotNull(confirmed) + latestOptions).distinctBy { it.id }
+        val formattedSchedules = scheduleReadAssembler.formatStoredSchedules(schedulesToFormat)
         val scheduleState = when {
             confirmed != null -> mapOf(
                 "status" to "confirmed",
-                "confirmedSchedule" to formatSchedule(confirmed),
-                "options" to latestOptions.map { formatSchedule(it) },
+                "confirmedSchedule" to formattedSchedules.getValue(confirmed.id),
+                "options" to latestOptions.map { formattedSchedules.getValue(it.id) },
             )
             latestOptions.isNotEmpty() -> mapOf(
                 "status" to "generated",
                 "confirmedSchedule" to null,
-                "options" to latestOptions.map { formatSchedule(it) },
+                "options" to latestOptions.map { formattedSchedules.getValue(it.id) },
             )
             else -> mapOf(
                 "status" to "empty",
@@ -382,10 +383,6 @@ class RoomService(
                     latestScheduleVersion = it.getLatestVersion(),
                 )
             }
-    }
-
-    private fun formatSchedule(schedule: Schedule): Map<String, Any?> {
-        return scheduleReadAssembler.formatStoredSchedule(schedule)
     }
 
     private fun normalizeRoomName(roomName: String?, destination: String): String {
