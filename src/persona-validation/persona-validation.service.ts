@@ -79,11 +79,35 @@ export class PersonaValidationService implements OnModuleInit {
     const results = new Map<string, PersonaValidationResult>();
 
     for (const option of options) {
-      const result = this.validateOption(option, members);
-      results.set(option.optionType, result);
+      try {
+        if (!Array.isArray(option.slots)) {
+          throw new Error('Schedule option slots must be an array.');
+        }
+
+        const result = this.validateOption(option, members);
+        results.set(option.optionType, result);
+      } catch (error) {
+        this.logger.warn(
+          `Failed to validate persona option ${option.optionType}: ${error instanceof Error ? error.message : error}`,
+        );
+        results.set(option.optionType, this.createEmptyValidationResult());
+      }
     }
 
     return results;
+  }
+
+  private createEmptyValidationResult(): PersonaValidationResult {
+    return {
+      source: 'synthetic_research',
+      dataset: 'nvidia/Nemotron-Personas-Korea',
+      personaAcceptanceScore: 0,
+      matchedPersonaCount: 0,
+      topPositiveSignals: [],
+      objectionReasons: [],
+      persuasionPoints: [],
+      matchedPersonas: [],
+    };
   }
 
   private validateOption(
@@ -175,13 +199,19 @@ export class PersonaValidationService implements OnModuleInit {
   ): number {
     if (personas.length === 0) return 0;
 
+    const slots = Array.isArray(option.slots) ? option.slots : [];
     let totalScore = 0;
 
     for (const persona of personas) {
-      const slotScores = option.slots.map((slot) => {
+      const slotScores = slots.map((slot) => {
         const targetVector = this.getSlotTargetVector(slot, option, persona);
         return this.calculateVectorMatch(targetVector, persona.scores);
       });
+
+      if (slotScores.length === 0) {
+        totalScore += 0;
+        continue;
+      }
 
       const avgSlotScore =
         slotScores.reduce((sum, s) => sum + s, 0) / slotScores.length;
@@ -243,11 +273,16 @@ export class PersonaValidationService implements OnModuleInit {
   ): string[] {
     const objections: string[] = [];
 
+    if (personas.length === 0) {
+      return objections;
+    }
+
     const avgMobility =
       personas.reduce((sum, p) => sum + p.scores.mobility, 0) /
       personas.length;
+    const slotCount = Array.isArray(option.slots) ? option.slots.length : 0;
 
-    if (avgMobility < 30 && option.slots.length > 5) {
+    if (avgMobility < 30 && slotCount > 5) {
       objections.push('휴식형 여행자에게는 장소 이동이 다소 부담스러울 수 있음');
     }
 
