@@ -8,6 +8,9 @@ import org.springframework.stereotype.Service
 open class LlmService(
     private val openAiClient: OpenAiClient,
 ) {
+    open val attemptedProvider: String
+        get() = openAiClient.providerName
+
 
     data class RefinedSlot(
         val orderIndex: Int,

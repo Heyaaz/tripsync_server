@@ -72,6 +72,7 @@ openai:
   api-key: ${OPENAI_API_KEY:}
   model: ${OPENAI_MODEL:gpt-4o-mini}
   timeout-seconds: ${OPENAI_TIMEOUT_SECONDS:10}
+  refinement-timeout-seconds: ${OPENAI_REFINEMENT_TIMEOUT_SECONDS:3}
 
 tourapi:
   key: ${TOURAPI_KEY:${TOUR_API_SERVICE_KEY:}}
