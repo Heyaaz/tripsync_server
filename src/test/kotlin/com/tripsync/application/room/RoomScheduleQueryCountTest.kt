@@ -96,12 +96,49 @@ class RoomScheduleQueryCountTest(
         )
     }
 
-    private fun createFixture(roomCount: Int, slotCount: Int, scoreCount: Int): QueryFixture {
+    @Test
+    fun `room detail batches generated schedule state detail reads`() {
+        val fixture = createFixture(
+            roomCount = 1,
+            slotCount = 3,
+            scoreCount = 3,
+            optionTypes = listOf(
+                ScheduleOptionType.BALANCED,
+                ScheduleOptionType.INDIVIDUAL,
+                ScheduleOptionType.DISCOVERY,
+            ),
+            confirmed = false,
+        )
+        val room = fixture.rooms.first()
+        flushAndClear()
+
+        val measured = queryCounter.count {
+            roomService.getRoom(room.id, fixture.host).data!!
+        }
+        val scheduleState = measured.result["scheduleState"] as Map<*, *>
+        val options = scheduleState["options"] as List<*>
+
+        assertEquals("generated", scheduleState["status"])
+        assertEquals(3, options.size)
+        assertTrue(
+            measured.prepareStatementCount <= 11,
+            "expected room detail scheduleState to stay within 11 statements, got ${measured.prepareStatementCount}",
+        )
+    }
+
+    private fun createFixture(
+        roomCount: Int,
+        slotCount: Int,
+        scoreCount: Int,
+        optionTypes: List<ScheduleOptionType> = listOf(ScheduleOptionType.BALANCED),
+        confirmed: Boolean = true,
+    ): QueryFixture {
         val suffix = System.nanoTime()
         val host = user("host-$suffix", "host-$suffix@example.com")
         val members = (1..scoreCount).map { user("member-$it-$suffix", "member-$it-$suffix@example.com") }
         val place = placeRepository.save(place("place-$suffix"))
         val schedules = mutableListOf<Schedule>()
+        val rooms = mutableListOf<TripRoom>()
 
         repeat(roomCount) { roomIndex ->
             val room = tripRoomRepository.save(
@@ -114,6 +151,7 @@ class RoomScheduleQueryCountTest(
                     status = TripRoomStatus.COMPLETED,
                 )
             )
+            rooms += room
             roomMemberRepository.save(RoomMember(room = room, user = host, role = RoomMemberRole.HOST))
             (members.take(scoreCount - 1)).forEach {
                 roomMemberRepository.save(RoomMember(room = room, user = it, role = RoomMemberRole.MEMBER))
@@ -134,44 +172,46 @@ class RoomScheduleQueryCountTest(
                 )
             }
 
-            val schedule = scheduleRepository.save(
-                Schedule(
-                    room = room,
-                    version = 1,
-                    optionType = ScheduleOptionType.BALANCED,
-                    isConfirmed = true,
-                    generationInput = mapOf("destination" to "충남", "startTime" to "09:00", "endTime" to "21:00"),
-                    summary = "query-count schedule",
-                    groupSatisfaction = 80,
-                )
-            )
-            schedules += schedule
-            repeat(slotCount) { slotIndex ->
-                scheduleSlotRepository.save(
-                    ScheduleSlot(
-                        schedule = schedule,
-                        startTime = Instant.parse("2026-06-01T0${slotIndex % 9}:00:00Z"),
-                        endTime = Instant.parse("2026-06-01T0${slotIndex % 9}:30:00Z"),
-                        place = place,
-                        slotType = SlotType.COMMON,
-                        reasonAxis = ReasonAxis.COMMON,
-                        reasonText = "slot-$slotIndex",
-                        orderIndex = slotIndex + 1,
+            optionTypes.forEachIndexed { optionIndex, optionType ->
+                val schedule = scheduleRepository.save(
+                    Schedule(
+                        room = room,
+                        version = 1,
+                        optionType = optionType,
+                        isConfirmed = confirmed && optionIndex == 0,
+                        generationInput = mapOf("destination" to "충남", "startTime" to "09:00", "endTime" to "21:00"),
+                        summary = "query-count schedule",
+                        groupSatisfaction = 80,
                     )
                 )
-            }
-            (listOf(host) + members.take(scoreCount - 1)).forEach { user ->
-                satisfactionScoreRepository.save(
-                    SatisfactionScore(
-                        schedule = schedule,
-                        user = user,
-                        score = 80,
-                        breakdown = mapOf("overall" to 80),
+                schedules += schedule
+                repeat(slotCount) { slotIndex ->
+                    scheduleSlotRepository.save(
+                        ScheduleSlot(
+                            schedule = schedule,
+                            startTime = Instant.parse("2026-06-01T0${slotIndex % 9}:00:00Z"),
+                            endTime = Instant.parse("2026-06-01T0${slotIndex % 9}:30:00Z"),
+                            place = place,
+                            slotType = SlotType.COMMON,
+                            reasonAxis = ReasonAxis.COMMON,
+                            reasonText = "slot-$slotIndex",
+                            orderIndex = slotIndex + 1,
+                        )
                     )
-                )
+                }
+                (listOf(host) + members.take(scoreCount - 1)).forEach { user ->
+                    satisfactionScoreRepository.save(
+                        SatisfactionScore(
+                            schedule = schedule,
+                            user = user,
+                            score = 80,
+                            breakdown = mapOf("overall" to 80),
+                        )
+                    )
+                }
             }
         }
-        return QueryFixture(host = host, schedules = schedules)
+        return QueryFixture(host = host, rooms = rooms, schedules = schedules)
     }
 
     private fun user(nickname: String, email: String): User {
@@ -220,6 +260,7 @@ class RoomScheduleQueryCountTest(
 
     private data class QueryFixture(
         val host: User,
+        val rooms: List<TripRoom>,
         val schedules: List<Schedule>,
     )
 }
